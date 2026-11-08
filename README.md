@@ -14,15 +14,16 @@ and staged rollout live in [docs/extraction-plan.md](docs/extraction-plan.md).
 
 ## Status
 
-Extraction in progress, nothing tagged yet. Present today: the output contract
+Extraction complete, tagged v0.1.0. Present: the output contract
 (`contract.go`, including transcript entries and tool calls), the agent registry,
 shared scan helpers, the 14 session scanners, `ScanSessions`, usage extraction
 for the 11 agents with local usage data, `ScanAllUsage`, `Summarize`, transcript
 loading (`LoadTranscript`, `Cache`), pricing (`EstimateTokenCost`,
-`NormalizeModelId`, `LookupModelPrice`, embedded model-prices.json) and their
-tests. Session and usage output
-match the old agent-view scanner except the four registered deviations in the
-plan (§9). Pricing and the CLI arrive in the stages listed in the plan.
+`NormalizeModelId`, `LookupModelPrice`, embedded model-prices.json) and the
+stateless CLI at `cmd/agent-session-sdk`. Session and usage output match the old
+agent-view scanner except the four registered deviations in the plan (§9), which
+have been merged back into agent-view. Both consumers (achat, agent-view) are
+migrated.
 
 ## Agents
 
@@ -44,6 +45,90 @@ git config --global url."git@github.com:".insteadOf "https://github.com/"
 Consumers pin a tag: `go get github.com/pangzi-club/agent-session-sdk@vX.Y.Z`, or
 `go install github.com/pangzi-club/agent-session-sdk/cmd/agent-session-sdk@vX.Y.Z`
 to build the CLI from source.
+
+## Library usage
+
+```go
+import agentsession "github.com/pangzi-club/agent-session-sdk"
+```
+
+Session lists — one `SessionScanResult` per agent, scanned in parallel:
+
+```go
+for _, result := range agentsession.ScanSessions(home) {
+    for _, session := range result.Sessions {
+        fmt.Println(result.AgentID, session.ID, session.UpdatedAt)
+    }
+}
+```
+
+Transcripts — `LoadTranscript` takes a `SessionInfo` from the scan (it locates
+the backing file through `FilePath`), so scan first, then load. `Cache` adds an
+LRU keyed by session that reloads when the store's size or mtime changes:
+
+```go
+cache := agentsession.NewCache(32)
+entries, err := cache.Load("claude", session) // []Entry{Role, Text, Tools, Timestamp}
+```
+
+Usage — `ScanAllUsage` returns records plus the sessions they belong to;
+`Summarize` aggregates per agent; `EstimateTokenCost` prices one record
+(credit-billed agents such as qoder pay credits, not model rates):
+
+```go
+scan := agentsession.ScanAllUsage(home)
+for _, record := range scan.Records {
+    usd, unpriced := agentsession.EstimateTokenCost(agentsession.TokenCostInput{
+        AgentID:          record.AgentID,
+        Model:            record.Model,
+        InputTokens:      record.InputTokens,
+        OutputTokens:     record.OutputTokens,
+        CacheReadTokens:  record.CacheReadTokens,
+        CacheWriteTokens: record.CacheWriteTokens,
+        Credits:          record.Credits,
+    })
+    fmt.Println(record.SessionID, usd, unpriced)
+}
+summaries := agentsession.Summarize(scan) // []AgentUsageSummary
+```
+
+`agentsession.PricingVersion` changes whenever the embedded price table does;
+embed it in cost caches to invalidate them without a manual bump.
+
+Real consumers: [achat](https://github.com/pangzi-club/achat) imports the
+library directly, agent-view shells out to the CLI through its scan bridge.
+
+## CLI usage
+
+Build with `make build-cli` (writes `./bin/agent-session-sdk`) or the
+`go install` command above. All output is JSON on stdout:
+
+```sh
+agent-session-sdk <sessions|usage|summary|transcript> [flags]
+```
+
+| Subcommand | Output |
+|---|---|
+| `sessions` | session list per agent (`SessionScanResult[]`) |
+| `usage` | usage records plus their sessions (`{records, sessions}`) |
+| `summary` | per-agent totals (sessions / requests / tokens / active time) |
+| `transcript` | one session's entries (`Entry[]`; needs `--agent` + `--session`) |
+
+Flags: `--home <dir>` (default `$HOME`), `--agent <ids>`
+(comma-separated filter, e.g. `--agent codex,claude`), `--pretty` (indent),
+`--cost` (usage only: appends `costUsd` / `costUnpricedTokens` per record and
+`pricingVersion` at the top level), `--session <id>` (transcript only).
+
+```sh
+agent-session-sdk sessions --agent codex --pretty
+agent-session-sdk usage --cost | jq '.records | length'
+agent-session-sdk summary --agent codex,claude
+agent-session-sdk transcript --agent claude --session <sessionId> --pretty
+```
+
+Session scanning covers 14 agents; usage and summary cover the 11 agents with
+local usage data (no cursor / gemini / kimi). Qoder tokens are heuristically
+reconstructed and records keep credits for cost estimation.
 
 ## Development
 
