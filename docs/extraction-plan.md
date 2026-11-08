@@ -112,7 +112,7 @@ func EstimateTokenCost(model string, tokens TokenCount) (usd, unpricedTokens flo
 ## 8. 风险与开放问题
 
 - **agentlog 与 scanner 漂移**：S1 门禁已跑完，结论见 §9；4 类 achat 增强全部采纳，S7 需回合并到 agent-view TS 才能让 parity 全绿。
-- **价格表维护**：models.dev 快照后续更新只改本库 JSON。
+- **价格表维护**：models.dev 快照后续更新只改本库 JSON。2026-11-08 已按 magpie 缓存（当日刷新）从快照 2026-10-05 → 2026-11-08 更新：+7 新模型（claude-haiku-5-5 / gemini-4-argon / gemini-pro-latest / gpt-6.1-terra / kimi-k3.1-pro ×2 / minimax-m3.1-flash）、-2 下架（gpt-5.2/5.3-chat-latest）、23 处改价（glm 系第一方真实降价 14 处、qwen 系 cacheWrite 补录等）。甄别要点：同名跨 provider 取第一方（deepseek-v4-flash-0731 第一方已下线，现用 alibaba 网关价 0.44/1.32）；lyria-3 输出含 audio 按规则排除；claude 日期版与裸名并存时剔除日期版。PricingVersion 随表变为 64204264（node 同算法独立复算一致）。
 - **agent-view 删 TS 的时机**：parity 通过后再删（S7 内分两个 commit：先接线、后删除），不保留长期双引擎。
 - **私有库访问**：消费方需配好 GOPRIVATE 与 GitHub SSH 权限（D6），否则 `go get`/`go install` 会走公开 proxy 失败；README 给出一行配置说明。
 - **cursor/hermes 覆盖**：旧 scanner CLI help 未列 cursor/hermes 但会话注册表有；scanusage 目录里没有 cursor/gemini/kimi/zcode 之外的缺项需 S2 核实（用量覆盖面小于会话覆盖面），S5 写 help 时按实际覆盖列。

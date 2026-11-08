@@ -51,9 +51,12 @@ func TestPricingTableLockedRows(t *testing.T) {
 }
 
 func TestPricingVersionMatchesTS(t *testing.T) {
-	// Locked to the TS implementation for the same table: the JSON
-	// transcription and the hash order must stay bit-identical.
-	const tsVersion = 1191524259
+	// Locked against the TS hash algorithm run over the same table (verified
+	// via node + pricing.ts's hashPrices on the identical JSON): the JSON
+	// transcription and the hash order must stay bit-identical across
+	// languages. Bump this constant when model-prices.json changes, after
+	// re-deriving it from the TS algorithm.
+	const tsVersion = 64204264
 	if PricingVersion != tsVersion {
 		t.Errorf("PricingVersion = %d, want %d (TS)", PricingVersion, tsVersion)
 	}
