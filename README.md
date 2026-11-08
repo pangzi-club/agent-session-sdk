@@ -18,7 +18,9 @@ Extraction in progress, nothing tagged yet. Present today: the output contract
 (`contract.go`, including transcript entries and tool calls), the agent registry,
 shared scan helpers, the 14 session scanners, `ScanSessions`, usage extraction
 for the 11 agents with local usage data, `ScanAllUsage`, `Summarize`, transcript
-loading (`LoadTranscript`, `Cache`) and their tests. Session and usage output
+loading (`LoadTranscript`, `Cache`), pricing (`EstimateTokenCost`,
+`NormalizeModelId`, `LookupModelPrice`, embedded model-prices.json) and their
+tests. Session and usage output
 match the old agent-view scanner except the four registered deviations in the
 plan (§9). Pricing and the CLI arrive in the stages listed in the plan.
 
