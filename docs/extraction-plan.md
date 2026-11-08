@@ -101,7 +101,7 @@ func EstimateTokenCost(model string, tokens TokenCount) (usd, unpricedTokens flo
 
 - **S0 骨架**（已完成）：go.mod、README、contract.go（含 transcript JSON 契约）、空 registry。验证 `go build ./...`。
 - **S1 对话列表**（已完成）：漂移门禁已跑——两侧归一化后除 §9 的 4 类 achat 增强外代码完全一致，故基座取 achat 版（注释英文、扁平包），补回 scanner 独有的 registry 编排（`canDelete` / `CanDeleteSessions`）；`shared/tally.go` 只服务用量，留 S2。移植 achat 的 shared_test + scan_test（两侧 shared 测试本就一致）。验证：单测全绿 + 与旧 scanner `sessions` 输出比对，差异恰好等于 §9 登记项（真实 home 368 会话、夹具树 40 会话覆盖 14 agent，均零意外差异）。
-- **S2 用量**：移植 scanusage 全部 + summary + 测试。验证：与旧 scanner `usage` / `summary` 输出 diff 为空。
+- **S2 用量**（已完成）：移植 scanusage 全部（11 个用量模块）+ summary + tally + interval 方法 + qoder_test，注释英文化，AST 校验与 scanner 原版逐声明一致（仅去重 `strPtr`）。验证：单测全绿；`usage` / `summary` 与旧 scanner 在真实 home（9932 records / 367 sessions）与夹具树（24 records / 36 sessions）逐字段一致，差异仅 §9 登记项（真实 home：qoder-cn userPrompts 74 + activeMs 26 为 #2 连带效应；夹具：grok filePath + hermes workspace）。用量覆盖 11 个 agent（无 cursor/gemini/kimi——TS 侧本就没有）。
 - **S3 对话详情**：从 achat 移植 transcript*.go + Cache，补 JSON tag。验证：移植 transcript_test；与 achat 原实现对同一会话输出一致。
 - **S4 计价**：model-prices.ts → JSON 转写脚本 + embed；移植 pricing 逻辑与测试。验证：与 TS `estimateTokenCost` 对同一组输入结果一致（含 Qoder credit、模型名归一化边界）。
 - **S5 CLI**：四个子命令 + help。验证：sessions/usage/summary 与旧 CLI 输出 diff 为空；transcript 冒烟。
@@ -125,7 +125,7 @@ agent-view 的 TS 实现与旧 scanner 都没有这些行为；采纳后 `sessio
 | # | 改动 | 涉及 agent | 输出差异 |
 |---|---|---|---|
 | 1 | 会话补 `FilePath`（S3 transcript 定位必需） | gemini / grok / kimi | `sessions` 多 `filePath` 键 |
-| 2 | `QoderUserPromptText` 先剥 `<system-reminder>` 再判注入，返回修剪后文本 | qoder / qoder-cn | 标题更准（真实 home 上 16 处变化，含 null → 真实标题） |
+| 2 | `QoderUserPromptText` 先剥 `<system-reminder>` 再判注入，返回修剪后文本 | qoder / qoder-cn | 标题更准（真实 home 上 16 处变化，含 null → 真实标题）；**连带效应（S2 实测）**：被误判注入的提示不再漏计——同一批会话的 `usage` 记录 `userPrompts` 恢复计数（74 条）、`activeMs` 增加对应活动时间（26 条），summary 的 activeMs 同步变化 |
 | 3 | hermes 无 cwd 时 workspace 伪路径分隔符 | hermes | `Hermes · x` → `Hermes \| x`（真实 home 231 处；· 在 achat 文案规则里禁用） |
 | 4 | 新增 `stripLeadingSystemReminder` 辅助函数 | qoder.go | 无直接输出差异（服务 #2 与 S3 transcript） |
 

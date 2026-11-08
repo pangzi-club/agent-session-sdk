@@ -16,9 +16,10 @@ and staged rollout live in [docs/extraction-plan.md](docs/extraction-plan.md).
 
 Extraction in progress, nothing tagged yet. Present today: the output contract
 (`contract.go`, including transcript entries and tool calls), the agent registry,
-shared scan helpers, the 14 session scanners, `ScanSessions` and their tests.
-Session output matches the old agent-view scanner except the four registered
-deviations in the plan (§9). Usage extraction, transcript loaders, pricing and
+shared scan helpers, the 14 session scanners, `ScanSessions`, usage extraction
+for the 11 agents with local usage data, `ScanAllUsage`, `Summarize` and their
+tests. Session and usage output match the old agent-view scanner except the
+four registered deviations in the plan (§9). Transcript loaders, pricing and
 the CLI arrive in the stages listed in the plan.
 
 ## Agents
