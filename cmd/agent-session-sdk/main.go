@@ -152,18 +152,21 @@ type costRecord struct {
 }
 
 // costScan is the --cost shape of the usage output: records carry the cost
-// fields on top of the base contract. Without --cost the plain UsageScan is
-// emitted, byte-identical to the previous scanner.
+// fields on top of the base contract, and the top level carries the price
+// table version so consumers can invalidate cost caches without a manual bump.
+// Without --cost the plain UsageScan is emitted, byte-identical to the
+// previous scanner.
 type costScan struct {
-	Records  []costRecord                `json:"records"`
-	Sessions []agentsession.UsageSession `json:"sessions"`
+	Records        []costRecord                `json:"records"`
+	Sessions       []agentsession.UsageSession `json:"sessions"`
+	PricingVersion uint32                      `json:"pricingVersion"`
 }
 
 func costify(scan agentsession.UsageScan, withCost bool) any {
 	if !withCost {
 		return scan
 	}
-	out := costScan{Records: make([]costRecord, 0, len(scan.Records)), Sessions: scan.Sessions}
+	out := costScan{Records: make([]costRecord, 0, len(scan.Records)), Sessions: scan.Sessions, PricingVersion: agentsession.PricingVersion}
 	for _, record := range scan.Records {
 		usd, unpriced := agentsession.EstimateTokenCost(agentsession.TokenCostInput{
 			AgentID: record.AgentID, Model: record.Model,
