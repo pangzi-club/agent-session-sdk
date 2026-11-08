@@ -1,4 +1,4 @@
-# agent-session-cli 抽取计划
+# agent-session-sdk 抽取计划
 
 将 agent-view 与 achat 中公共的「agent 对话列表 / 对话详情 / 用量统计」逻辑抽取为独立 Go 库 + CLI，两个应用改为消费本库，删除各自重复实现。
 
@@ -20,8 +20,7 @@
 - 输出契约以 `agent-view/src/ipc-contract.ts` 为准，Go 侧 `scanner/internal/contract/contract.go` 逐字段对齐（float64、omitempty 与显式 null 的区分都有明确约定）。
 - 计价只在 TS：`usage/model-prices.ts`（models.dev 快照，USD/1M tokens）、`usage/pricing.ts:108` `estimateTokenCost`、Qoder credit 单价。报告聚合 `usage/report.ts:41` `buildUsageReport` 是 UI 侧逻辑。
 - 对话详情只在 achat：`agentlog/transcript.go:54` `LoadTranscript` 按 agent 分发，模型 `Entry{Role,Text,Tools,Timestamp}`、`ToolCall{Name,Title,Meta,Kind}`，带 size+mtime 签名失效的 LRU `Cache`。
-- 另有 `agent-session-sdk`（Swift 库 + assdk CLI）是平行移植，**不在本次范围**，但 JSON 契约与价格表应保持对齐。
-- 本仓库远端 `github.com/pangzi-club/agent-session-cli`（私有）已建。
+- 本仓库远端 `github.com/pangzi-club/agent-session-sdk`（私有）已建。
 
 ## 2. 目标与非目标
 
@@ -35,13 +34,13 @@
 
 - 会话删除（留在 agent-view，契约中 `canDeleteSessions` 字段保留兼容）。
 - UI 报告聚合（`buildUsageReport` 的周时热力/工具/技能报表留在 agent-view TS）。
-- Swift SDK 重写；文件监听 / daemon 模式；缓存持久化（缓存仍由各应用自己管）。
+- 文件监听 / daemon 模式；缓存持久化（缓存仍由各应用自己管）。
 
 ## 3. 关键决策
 
 **D1 — 用 Go。** achat 是 Go 可直接 import；agent-view 已有 Go 子进程桥接模式；依赖纯 Go 无 cgo（modernc.org/sqlite、klauspost/compress、x/sync），单二进制易分发。TS 库无法服务 achat，不选。
 
-**D2 — 扁平根包 `agentsession`。** module 为 `github.com/pangzi-club/agent-session-cli`。沿用 agentlog 已验证的扁平布局（contract / shared / registry / 各 agent 文件同包），避免 contract↔shared↔scanners 之间的循环 import；scanner 的 `internal/` 结构无法被外部 import，不沿用。
+**D2 — 扁平根包 `agentsession`。** module 为 `github.com/pangzi-club/agent-session-sdk`。沿用 agentlog 已验证的扁平布局（contract / shared / registry / 各 agent 文件同包），避免 contract↔shared↔scanners 之间的循环 import；scanner 的 `internal/` 结构无法被外部 import，不沿用。
 
 **D3 — JSON 契约与 ipc-contract.ts 逐字段对齐。** 保留 float64、omitempty / 显式 null 约定（`contract.go:1-11` 的注释规范），使 agent-view 换二进制后 TS 零改动。transcript 输出是新增契约，给 achat 的 `Entry`/`ToolCall` 补 JSON tag。
 
@@ -49,13 +48,13 @@
 
 **D5 — 计价移植进库。** 价格表（models.dev 快照）转 JSON 用 `go:embed` 内嵌，移植 `estimateTokenCost` 与模型名归一化、Qoder credit 单价。基础契约不变，cost 作为 CLI 可选输出（`--cost`），避免影响现有 parity。
 
-**D6 — 私有 GitHub 仓库，消费方直接引源码。** 代码 push 到 `github.com/pangzi-club/agent-session-cli`（私有）后：achat 通过 Go module 直接 import（配 `GOPRIVATE=github.com/pangzi-club/*` + git SSH 访问）；agent-view 的 dev/打包脚本用 `go build` / `go install` 从模块源码构建 CLI。不依赖公开 Release 产物，消费方按 tag 固定版本。
+**D6 — 私有 GitHub 仓库，消费方直接引源码。** 代码 push 到 `github.com/pangzi-club/agent-session-sdk`（私有）后：achat 通过 Go module 直接 import（配 `GOPRIVATE=github.com/pangzi-club/*` + git SSH 访问）；agent-view 的 dev/打包脚本用 `go build` / `go install` 从模块源码构建 CLI。不依赖公开 Release 产物，消费方按 tag 固定版本。
 
 ## 4. 仓库布局
 
 ```
-agent-session-cli/
-  go.mod                        # github.com/pangzi-club/agent-session-cli, go 1.27
+agent-session-sdk/
+  go.mod                        # github.com/pangzi-club/agent-session-sdk, go 1.27
   contract.go                   # SessionInfo/SessionScanResult/UsageRecord/UsageScan/AgentUsageSummary
   shared.go                     # ScanLines/ToTitle/DecodePathDirName/OpenSQLite/QueryMaps/SessionTally…
   registry.go                   # agent 注册表 + ScanSessions 并行编排 + IsKnownAgent
@@ -67,7 +66,7 @@ agent-session-cli/
   pricing.go                    # EstimateTokenCost / 模型名归一化 / credit 单价
   model-prices.json             # go:embed 价格表（从 TS model-prices.ts 转写）
   *_test.go                     # 从两个仓库移植 + 新增
-  cmd/agent-session-cli/main.go # CLI 入口
+  cmd/agent-session-sdk/main.go # CLI 入口
   docs/extraction-plan.md       # 本文档
   README.md
 ```
@@ -87,7 +86,7 @@ func EstimateTokenCost(model string, tokens TokenCount) (usd, unpricedTokens flo
 
 ## 6. CLI 设计
 
-`agent-session-cli <subcommand> [flags]`，通用 flags：`--home` / `--agent ids` / `--pretty`（沿用 scanner 语义与英文 help）。
+`agent-session-sdk <subcommand> [flags]`，通用 flags：`--home` / `--agent ids` / `--pretty`（沿用 scanner 语义与英文 help）。
 
 | 子命令 | 输出 | 来源 |
 |---|---|---|
@@ -108,13 +107,13 @@ func EstimateTokenCost(model string, tokens TokenCount) (usd, unpricedTokens flo
 - **S5 CLI**：四个子命令 + help。验证：sessions/usage/summary 与旧 CLI 输出 diff 为空；transcript 冒烟。
 - **S6 achat 迁移**：go.mod 引入本库，`agentlog.` → `agentsession.` 机械替换，删除 agentlog/。验证：achat 构建 + 测试 + 启动冒烟。
 - **S7 agent-view 迁移**：scan-bridge 指向新二进制（改名/路径），pack-scanner.mjs 改为从本库构建；跑 parity-scan.mjs 确认 TS↔新库一致后，删除 scanner/ 与 TS agents/usage 扫描实现及 env 回落（遵循「能力内置后删除探测/fallback」原则）。cost 挂载改吃库输出，删 pricing.ts/model-prices.ts。验证：pnpm parity + 应用冒烟。
-- **S8 发布**：push 到私有 GitHub 并打 tag（v0.x）；消费方固定版本——achat `go get github.com/pangzi-club/agent-session-cli@vX`，agent-view 构建脚本 `go install …/cmd/agent-session-cli@vX`；README 写明私有库访问配置（GOPRIVATE、git SSH insteadOf）。
+- **S8 发布**：push 到私有 GitHub 并打 tag（v0.x）；消费方固定版本——achat `go get github.com/pangzi-club/agent-session-sdk@vX`，agent-view 构建脚本 `go install …/cmd/agent-session-sdk@vX`；README 写明私有库访问配置（GOPRIVATE、git SSH insteadOf）。
 
 ## 8. 风险与开放问题
 
 - **agentlog 与 scanner 漂移**：S1 的 diff 是前置门禁，发现 achat 侧修复需回合并。
-- **价格表维护**：models.dev 快照后续更新只改本库 JSON；Swift SDK 侧的同步是独立事项。
+- **价格表维护**：models.dev 快照后续更新只改本库 JSON。
 - **agent-view 删 TS 的时机**：parity 通过后再删（S7 内分两个 commit：先接线、后删除），不保留长期双引擎。
 - **私有库访问**：消费方需配好 GOPRIVATE 与 GitHub SSH 权限（D6），否则 `go get`/`go install` 会走公开 proxy 失败；README 给出一行配置说明。
 - **cursor/hermes 覆盖**：scanner CLI help 文本未列 cursor/hermes 但注册表有，S1 核实用量子命令实际覆盖范围并修正 help。
-- 包名 `agentsession`、CLI 名 `agent-session-cli` 如有偏好可在 S0 前调整。
+- 命名已定（S0）：module `github.com/pangzi-club/agent-session-sdk`、包名 `agentsession`、CLI `agent-session-sdk`。原 Swift 平行移植已删除，该名字唯一归本库。
