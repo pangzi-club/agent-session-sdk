@@ -102,7 +102,7 @@ func EstimateTokenCost(model string, tokens TokenCount) (usd, unpricedTokens flo
 - **S0 骨架**（已完成）：go.mod、README、contract.go（含 transcript JSON 契约）、空 registry。验证 `go build ./...`。
 - **S1 对话列表**（已完成）：漂移门禁已跑——两侧归一化后除 §9 的 4 类 achat 增强外代码完全一致，故基座取 achat 版（注释英文、扁平包），补回 scanner 独有的 registry 编排（`canDelete` / `CanDeleteSessions`）；`shared/tally.go` 只服务用量，留 S2。移植 achat 的 shared_test + scan_test（两侧 shared 测试本就一致）。验证：单测全绿 + 与旧 scanner `sessions` 输出比对，差异恰好等于 §9 登记项（真实 home 368 会话、夹具树 40 会话覆盖 14 agent，均零意外差异）。
 - **S2 用量**（已完成）：移植 scanusage 全部（11 个用量模块）+ summary + tally + interval 方法 + qoder_test，注释英文化，AST 校验与 scanner 原版逐声明一致（仅去重 `strPtr`）。验证：单测全绿；`usage` / `summary` 与旧 scanner 在真实 home（9932 records / 367 sessions）与夹具树（24 records / 36 sessions）逐字段一致，差异仅 §9 登记项（真实 home：qoder-cn userPrompts 74 + activeMs 26 为 #2 连带效应；夹具：grok filePath + hermes workspace）。用量覆盖 11 个 agent（无 cursor/gemini/kimi——TS 侧本就没有）。
-- **S3 对话详情**：从 achat 移植 transcript*.go + Cache，补 JSON tag。验证：移植 transcript_test；与 achat 原实现对同一会话输出一致。
+- **S3 对话详情**（已完成）：从 achat 移植 transcript.go（LoadTranscript 分发 + Cache）+ 8 个解析器 + transcript_test；Entry/ToolCall 用 contract.go 带 JSON tag 的定义（删 achat 侧无 tag 重复）。AST 校验与 achat 逐声明一致。验证：单测全绿 + 双引擎（本库 vs achat agentlog）对真实 home（16 会话）与夹具树（23 会话，14 agent）LoadTranscript 逐 entry DeepEqual 一致。
 - **S4 计价**：model-prices.ts → JSON 转写脚本 + embed；移植 pricing 逻辑与测试。验证：与 TS `estimateTokenCost` 对同一组输入结果一致（含 Qoder credit、模型名归一化边界）。
 - **S5 CLI**：四个子命令 + help。验证：sessions/usage/summary 与旧 CLI 输出 diff 为空；transcript 冒烟。
 - **S6 achat 迁移**：go.mod 引入本库，`agentlog.` → `agentsession.` 机械替换，删除 agentlog/。验证：achat 构建 + 测试 + 启动冒烟。
