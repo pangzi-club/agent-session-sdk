@@ -44,7 +44,7 @@
 
 **D3 — JSON 契约与 ipc-contract.ts 逐字段对齐。** 保留 float64、omitempty / 显式 null 约定（`contract.go:1-11` 的注释规范），使 agent-view 换二进制后 TS 零改动。transcript 输出是新增契约，给 achat 的 `Entry`/`ToolCall` 补 JSON tag。
 
-**D4 — 代码来源：列表 + 用量以 scanner 为准，transcript 以 achat 为准。** scanner 更新且有用量；agentlog 可能有移植后的独立修复，S1 先 diff 两边同名文件确认漂移再合并。
+**D4 — 代码来源：列表 + 用量以 scanner 为准，transcript 以 achat 为准。** scanner 更新且有用量；agentlog 可能有移植后的独立修复，S1 先 diff 两边同名文件确认漂移再合并。S1 实测：两侧除 §9 四类增强外代码逐声明一致，会话层基座取 achat 版（注释英文、扁平包），用量层（S2）仍以 scanner 为准。
 
 **D5 — 计价移植进库。** 价格表（models.dev 快照）转 JSON 用 `go:embed` 内嵌，移植 `estimateTokenCost` 与模型名归一化、Qoder credit 单价。基础契约不变，cost 作为 CLI 可选输出（`--cost`），避免影响现有 parity。
 
@@ -99,8 +99,8 @@ func EstimateTokenCost(model string, tokens TokenCount) (usd, unpricedTokens flo
 
 每阶段独立验证 + 一个 commit，汇报后等「继续」再推进。
 
-- **S0 骨架**：go.mod、README、contract.go（含 transcript JSON 契约）、空 registry。验证 `go build ./...`。
-- **S1 对话列表**：先 diff `achat/agentlog/*.go` 与 `scanner/internal/{scansession,shared}/*.go` 确认漂移，逐文件取最新合并；移植测试。验证：单测 + 与旧 scanner `sessions` 输出在真实 home 上逐字段 diff 为空。
+- **S0 骨架**（已完成）：go.mod、README、contract.go（含 transcript JSON 契约）、空 registry。验证 `go build ./...`。
+- **S1 对话列表**（已完成）：漂移门禁已跑——两侧归一化后除 §9 的 4 类 achat 增强外代码完全一致，故基座取 achat 版（注释英文、扁平包），补回 scanner 独有的 registry 编排（`canDelete` / `CanDeleteSessions`）；`shared/tally.go` 只服务用量，留 S2。移植 achat 的 shared_test + scan_test（两侧 shared 测试本就一致）。验证：单测全绿 + 与旧 scanner `sessions` 输出比对，差异恰好等于 §9 登记项（真实 home 368 会话、夹具树 40 会话覆盖 14 agent，均零意外差异）。
 - **S2 用量**：移植 scanusage 全部 + summary + 测试。验证：与旧 scanner `usage` / `summary` 输出 diff 为空。
 - **S3 对话详情**：从 achat 移植 transcript*.go + Cache，补 JSON tag。验证：移植 transcript_test；与 achat 原实现对同一会话输出一致。
 - **S4 计价**：model-prices.ts → JSON 转写脚本 + embed；移植 pricing 逻辑与测试。验证：与 TS `estimateTokenCost` 对同一组输入结果一致（含 Qoder credit、模型名归一化边界）。
@@ -111,9 +111,22 @@ func EstimateTokenCost(model string, tokens TokenCount) (usd, unpricedTokens flo
 
 ## 8. 风险与开放问题
 
-- **agentlog 与 scanner 漂移**：S1 的 diff 是前置门禁，发现 achat 侧修复需回合并。
+- **agentlog 与 scanner 漂移**：S1 门禁已跑完，结论见 §9；4 类 achat 增强全部采纳，S7 需回合并到 agent-view TS 才能让 parity 全绿。
 - **价格表维护**：models.dev 快照后续更新只改本库 JSON。
 - **agent-view 删 TS 的时机**：parity 通过后再删（S7 内分两个 commit：先接线、后删除），不保留长期双引擎。
 - **私有库访问**：消费方需配好 GOPRIVATE 与 GitHub SSH 权限（D6），否则 `go get`/`go install` 会走公开 proxy 失败；README 给出一行配置说明。
-- **cursor/hermes 覆盖**：scanner CLI help 文本未列 cursor/hermes 但注册表有，S1 核实用量子命令实际覆盖范围并修正 help。
+- **cursor/hermes 覆盖**：旧 scanner CLI help 未列 cursor/hermes 但会话注册表有；scanusage 目录里没有 cursor/gemini/kimi/zcode 之外的缺项需 S2 核实（用量覆盖面小于会话覆盖面），S5 写 help 时按实际覆盖列。
 - 命名已定（S0）：module `github.com/pangzi-club/agent-session-sdk`、包名 `agentsession`、CLI `agent-session-sdk`。原 Swift 平行移植已删除，该名字唯一归本库。
+
+## 9. 已登记偏差（S1 采纳的 achat 增强）
+
+agent-view 的 TS 实现与旧 scanner 都没有这些行为；采纳后 `sessions` 输出与旧 scanner 存在且仅存在这几类差异。S7 需把它们回合并到 agent-view TS，parity 才能恢复逐字段一致。
+
+| # | 改动 | 涉及 agent | 输出差异 |
+|---|---|---|---|
+| 1 | 会话补 `FilePath`（S3 transcript 定位必需） | gemini / grok / kimi | `sessions` 多 `filePath` 键 |
+| 2 | `QoderUserPromptText` 先剥 `<system-reminder>` 再判注入，返回修剪后文本 | qoder / qoder-cn | 标题更准（真实 home 上 16 处变化，含 null → 真实标题） |
+| 3 | hermes 无 cwd 时 workspace 伪路径分隔符 | hermes | `Hermes · x` → `Hermes \| x`（真实 home 231 处；· 在 achat 文案规则里禁用） |
+| 4 | 新增 `stripLeadingSystemReminder` 辅助函数 | qoder.go | 无直接输出差异（服务 #2 与 S3 transcript） |
+
+验证证据：真实 home 368 会话、夹具树 40 会话（14 agent 全覆盖），逐字段比对差异全部归入上表，零意外。
