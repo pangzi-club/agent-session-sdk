@@ -3,27 +3,19 @@
 Go library and stateless CLI for reading local coding-agent session stores:
 session lists, transcripts and usage statistics (tokens, credits, USD cost).
 
-It replaces the duplicated scan layers of [agent-view](https://github.com/pangzi-club/agent-view)
-and [achat](https://github.com/pangzi-club/achat). The inventory, design decisions
-and staged rollout live in [docs/extraction-plan.md](docs/extraction-plan.md).
-
-- Module: `github.com/pangzi-club/agent-session-sdk` (private), package `agentsession`
+- Module: `github.com/pangzi-club/agent-session-sdk`, package `agentsession`
 - Pure Go, no cgo; single-binary CLI at `cmd/agent-session-sdk`
-- Session and usage JSON is aligned field for field with agent-view's
-  `src/ipc-contract.ts`; transcripts are an additional contract
+- MIT licensed
 
 ## Status
 
-Extraction complete, tagged v0.1.0. Present: the output contract
-(`contract.go`, including transcript entries and tool calls), the agent registry,
-shared scan helpers, the 14 session scanners, `ScanSessions`, usage extraction
-for the 11 agents with local usage data, `ScanAllUsage`, `Summarize`, transcript
-loading (`LoadTranscript`, `Cache`), pricing (`EstimateTokenCost`,
-`NormalizeModelId`, `LookupModelPrice`, embedded model-prices.json) and the
-stateless CLI at `cmd/agent-session-sdk`. Session and usage output match the old
-agent-view scanner except the four registered deviations in the plan (§9), which
-have been merged back into agent-view. Both consumers (achat, agent-view) are
-migrated.
+v0.1.0. Present: the output contract (`contract.go`, including transcript
+entries and tool calls), the agent registry, shared scan helpers, the 14
+session scanners, `ScanSessions`, usage extraction for the 11 agents with
+local usage data, `ScanAllUsage`, `Summarize`, transcript loading
+(`LoadTranscript`, `Cache`), pricing (`EstimateTokenCost`, `NormalizeModelId`,
+`LookupModelPrice`, embedded model-prices.json) and the stateless CLI at
+`cmd/agent-session-sdk`.
 
 ## Agents
 
@@ -32,19 +24,12 @@ zcode, workbuddy, pi, dsh, grok, qoder, qoder-cn, kimi, hermes. qwen is detected
 consumers but not scanned. Session deletion stays in the consumer; the library
 only reports `canDeleteSessions`.
 
-## Access
-
-The module is private, so keep it off the public proxy and let Go use your git
-credentials:
+## Install
 
 ```sh
-go env -w GOPRIVATE=github.com/pangzi-club/*
-git config --global url."git@github.com:".insteadOf "https://github.com/"
+go get github.com/pangzi-club/agent-session-sdk@v0.1.0
+go install github.com/pangzi-club/agent-session-sdk/cmd/agent-session-sdk@v0.1.0
 ```
-
-Consumers pin a tag: `go get github.com/pangzi-club/agent-session-sdk@vX.Y.Z`, or
-`go install github.com/pangzi-club/agent-session-sdk/cmd/agent-session-sdk@vX.Y.Z`
-to build the CLI from source.
 
 ## Library usage
 
@@ -95,9 +80,6 @@ summaries := agentsession.Summarize(scan) // []AgentUsageSummary
 `agentsession.PricingVersion` changes whenever the embedded price table does;
 embed it in cost caches to invalidate them without a manual bump.
 
-Real consumers: [achat](https://github.com/pangzi-club/achat) imports the
-library directly, agent-view shells out to the CLI through its scan bridge.
-
 ## CLI usage
 
 Build with `make build-cli` (writes `./bin/agent-session-sdk`) or the
@@ -130,6 +112,12 @@ Session scanning covers 14 agents; usage and summary cover the 11 agents with
 local usage data (no cursor / gemini / kimi). Qoder tokens are heuristically
 reconstructed and records keep credits for cost estimation.
 
+## Price table
+
+`model-prices.json` is an embedded snapshot of [models.dev](https://models.dev)
+model rates, curated per provider. Refreshes only touch that JSON file;
+`PricingVersion` (a hash of the table) changes with it.
+
 ## Development
 
 ```sh
@@ -139,3 +127,8 @@ go vet ./...
 ```
 
 Comments, CLI help and diagnostics are written in English.
+
+## License
+
+[MIT](LICENSE). The embedded price table is a snapshot of
+[models.dev](https://models.dev) data, also MIT licensed.
