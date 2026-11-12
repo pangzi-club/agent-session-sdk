@@ -39,8 +39,8 @@ type SessionTally struct {
 }
 
 // AddEvent feeds one activity event; skill is an optional argument holding the
-// skill name carried by a Skill tool call (only the claude / qoder transcripts
-// pass it; the other scanners omit it).
+// skill name carried by a Skill tool call (only the claude, qoder and zcode
+// usage extractors pass it; the other scanners omit it).
 func (t *SessionTally) AddEvent(ts float64, kind TallyEventKind, tool *string, skill ...*string) {
 	if math.IsNaN(ts) || math.IsInf(ts, 0) || ts <= 0 {
 		return

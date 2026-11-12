@@ -5,8 +5,8 @@ package agentsession
 // turn's record point in providerData.usage / rawUsage (prompt_tokens includes
 // cache hits and is normalized by subtraction → excludes cache;
 // cache_creation_input_tokens / prompt_cache_write_tokens are cache writes;
-// when only usage is present, cached tokens come from inputTokens minus
-// inputTokensDetails[].cached_tokens). Lines with role=user that
+// when only usage is present, cached tokens come from
+// inputTokensDetails[0].cached_tokens). Lines with role=user that
 // providerData does not flag as injected / compaction-internal are prompts;
 // `function_call` lines are tool calls. The session list reuses ScanWorkbuddy
 // (metadata and filePath come from the same store).
