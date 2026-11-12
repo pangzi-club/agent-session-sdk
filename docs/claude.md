@@ -1,0 +1,293 @@
+# Claude Code — session store format & parsing
+
+How the `claude` agent stores sessions on disk, and how this SDK turns that
+store into `SessionInfo`, `Entry[]` and `UsageRecord[]`.
+
+This is the reference template for the per-agent docs. Every agent doc follows
+the same section order: at a glance → on-disk layout → record format → session
+scanning → transcript parsing → usage extraction → aggregation & cost → quirks →
+source map.
+
+## At a glance
+
+| Property | Value |
+|---|---|
+| Agent id | `claude` |
+| Display name | Claude Code |
+| Store directory | `~/.claude` |
+| `canDeleteSessions` | `true` (the library only reports this; deletion is the consumer's job) |
+| Session scanner | `ScanClaude` (`claude.go`) |
+| Transcript loader | `parseClaudeTranscript` (`transcript_claude.go`), shared with `qoder` / `qoder-cn` |
+| Usage module | `scanClaudeUsage` (`usage_claude.go`) |
+| Billing | Token-metered against model rates; no credit accounting (`credits` omitted) |
+| Store format | JSONL transcript per session, plus an optional `sessions-index.json` |
+
+## On-disk layout
+
+```
+~/.claude/
+  projects/
+    -Users-alice-code-app/            # one directory per project (encoded cwd)
+      sessions-index.json             # optional fast-path index
+      <sessionId>.jsonl               # one transcript per session
+      <sessionId>.jsonl
+    -Users-alice-code-other/
+      ...
+```
+
+- **One directory per project.** The directory name is the project's absolute
+  path with `/` replaced by `-`, so `/Users/alice/code/app` becomes
+  `-Users-alice-code-app`. The SDK reverses this with `DecodePathDirName`
+  (`shared.go`): strip a leading/trailing `--`, require a leading `-`, then
+  replace every `-` with `/`. This is a lossy heuristic — a real path containing
+  `-` decodes ambiguously — which is why the index's `projectPath` is preferred
+  when present.
+- **One JSONL file per session.** The file name minus `.jsonl` is the session id.
+- **`sessions-index.json` is optional.** When it exists and yields entries, the
+  scanner uses it and never opens the JSONL files. Otherwise it falls back to a
+  streaming scan of each file.
+- Dot-prefixed project directories are skipped (`ListDirs`).
+
+## Record format (JSONL)
+
+Each line is one JSON object. Blank lines and lines that fail to parse are
+silently skipped. The fields the SDK reads:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `type` | string | `user`, `assistant`, `system` (others ignored) |
+| `timestamp` | string (RFC3339) | Event time, e.g. `2026-11-12T09:30:00.000Z` |
+| `sessionId` | string | Session the line belongs to (required for a usage record) |
+| `cwd` | string | Project working directory (used to locate the workspace) |
+| `isSidechain` | bool | `true` for subagent (Task tool) lines — skipped in usage |
+| `isMeta` | bool | `true` for injected meta user lines — skipped in transcript |
+| `message` | object | `{ role, content, model, usage }` |
+| `message.content` | string \| array | Text, or an array of content blocks |
+| `message.model` | string | Model id for the assistant turn |
+| `message.usage` | object | Per-turn token counts (assistant only) |
+| `subtype` | string | On system lines: `compact_boundary` marks a compaction |
+| `isCompactSummary` | bool | Alternate compaction marker |
+
+### Content blocks
+
+`message.content` is either a plain string or an array of typed blocks:
+
+| Block `type` | Shape | Transcript treatment |
+|---|---|---|
+| `text` | `{ type, text }` | Rendered as text |
+| `tool_use` | `{ type, name, input, id }` | Rendered as a tool card |
+| `tool_result` | `{ type, tool_use_id, content }` | Dropped (raw tool output is noise) |
+| `thinking` / `redacted_thinking` | `{ type, thinking }` | Dropped (reasoning is noise) |
+| `image` | `{ type, source }` | Dropped |
+
+### `message.usage`
+
+| Key | Maps to |
+|---|---|
+| `input_tokens` | `InputTokens` (non-cached input only) |
+| `output_tokens` | `OutputTokens` |
+| `cache_read_input_tokens` | `CacheReadTokens` |
+| `cache_creation_input_tokens` | `CacheWriteTokens` |
+
+### Illustrative line
+
+Synthetic, for shape only:
+
+```json
+{"type":"assistant","timestamp":"2026-11-12T09:30:02.000Z","sessionId":"abc-123","cwd":"/Users/alice/code/app","message":{"role":"assistant","model":"claude-sonnet-4","content":[{"type":"text","text":"Reading the file."},{"type":"tool_use","name":"Read","input":{"file_path":"/Users/alice/code/app/main.go"}}],"usage":{"input_tokens":1200,"output_tokens":48,"cache_read_input_tokens":8000,"cache_creation_input_tokens":0}}}
+```
+
+## Session scanning → `SessionInfo`
+
+`ScanClaude` → `scanClaudeProjectsDir` lists `projects/` and scans each project
+directory in parallel. Per directory (`scanClaudeProjectDir`, `claude.go:46`)
+there are two paths.
+
+### Fast path: `sessions-index.json`
+
+Read the file, parse the root object, take its `entries` array. For each entry:
+
+- Skip it if `fullPath` contains `/memory/`.
+- `workspace` = `projectPath`, else the decoded directory name; skip if empty.
+- `id` = `sessionId`, else `basename(fullPath)` minus `.jsonl`.
+- `createdAt` = `created` ?? `fileMtime` ?? `0`.
+- `updatedAt` = `modified` ?? `fileMtime` ?? `createdAt`.
+- `title` = `ToTitle(summary)`, else `ToTitle(firstPrompt)` (tiered — a summary
+  may be blank or injected text, so it does not short-circuit `firstPrompt`).
+- `sizeBytes` = size of `fullPath` on disk.
+- `filePath` = `fullPath`.
+
+If the index produced any entries, they are returned and the JSONL files are
+never opened.
+
+### Fallback: streaming scan
+
+When there is no usable index, list `*.jsonl` in the directory (non-recursive)
+and scan up to `FileConcurrency` (16) at once via `scanClaudeFile`
+(`claude.go:138`). Each file is streamed, never fully read, bounded by
+`ScanMaxBytes` (32 MiB):
+
+1. **Metadata pass** — find the first `type == "user"` line carrying a non-empty
+   `cwd`; capture `cwd` and `createdAt = AsEpochMs(timestamp)`. No such line →
+   the file is skipped.
+2. **Title pass** — a separate scan for the first `type == "user"` line whose
+   `message.content` yields a usable `ToTitle`. This is separate from the meta
+   pass because slash-command sessions inject an echo as the first user line;
+   the scan keeps looking for the first real prompt.
+3. `updatedAt` = file mtime (ms); `createdAt` = meta timestamp ?? mtime;
+   `id` = file name minus `.jsonl`; `sizeBytes` = file size; `filePath` = file.
+
+A file that vanishes between listing and `stat` is skipped, not fatal.
+
+### Title normalization (`ToTitle`, `shared.go:211`)
+
+Skip leading blank lines; unwrap the Codex `## My request:` attachment envelope
+and the `PLEASE IMPLEMENT THIS PLAN:` preamble; treat a first line starting with
+`<` or `# ` as injected (returns nil → look at the next candidate); truncate to
+120 UTF-16 code units (117 + `...`). Truncation counts UTF-16 units, so an emoji
+counts as 2, matching the original TypeScript `slice`.
+
+## Transcript parsing → `Entry[]`
+
+`parseClaudeTranscript` (`transcript_claude.go:5`) locates the file via
+`SessionInfo.FilePath` (a `#` suffix marks a SQLite store and is rejected here),
+then streams it with `scanJSONLines` (per-line cap `ScanMaxTranscriptLine`,
+32 MiB). Per record:
+
+- `ts = mapTimestamp(obj, false)` — reads `timestamp` / `time` / `createdAt` /
+  `created_at`, recursing into `message` / `payload` / `data`; accepts a finite
+  number or an RFC3339 string (`AsEpochMs`). `0` when none is found.
+- **`user`** — skip if `isMeta` is true; otherwise
+  `entriesFromContent(user, message.content, ts)`.
+- **`assistant`** — `entriesFromContent(assistant, message.content, ts)`.
+- **`system`** — if `subtype == "compact_boundary"` or `isCompactSummary` is
+  true, emit one system entry whose text is the literal string `上下文已压缩`
+  (Chinese for "context compressed"). No other system line produces an entry.
+
+### From content to entries (`entriesFromContent`, `transcript.go:238`)
+
+- A **string** becomes one text entry (after cleaning).
+- A **wrapped object** with `text` or `content` recurses into it.
+- An **array of blocks** is walked in order: consecutive text blocks are joined
+  with `\n` into a single entry; each `tool_use` block first flushes any pending
+  text, then emits its own assistant entry carrying exactly one `ToolCall`.
+- Text-like kinds: `text`, `input_text`, `output_text`. Tool-like kinds:
+  `tool_use`, `tool_call`, `toolCall`, `function_call`.
+- Dropped kinds: `thinking`, `reasoning`, `redacted_thinking`, `tool_result`,
+  `image`.
+
+An `Entry` is always either text or tools, never both. Text and tools from the
+same assistant record share that record's timestamp.
+
+### User-text cleaning (`cleanUserText`, `transcript.go:217`)
+
+Trim; strip a leading `<system-reminder>`; strip `<timestamp>…</timestamp>`;
+unwrap the Cursor user-query envelope; drop the result if it is empty or starts
+with `<`; drop known scaffolding prefixes (`base directory for this skill:`,
+`# agents.md instructions`, `please implement this plan:`). Assistant text is
+only trimmed (`cleanAssistantText`).
+
+### Tool cards (`toolCall`, `transcript.go:344`)
+
+`toolFromBlock` reads the name from `name` / `tool` / `tool_name` and the input
+from `input` / `arguments` / `args` (or a JSON-string `arguments`). The card:
+
+- **`kind`** — `file` (Read/Edit/Write/MultiEdit/NotebookEdit/…), `command`
+  (Bash/shell/terminal/…), `search` (Grep/Glob/WebSearch/WebFetch/…), else
+  `other`.
+- **`title`** — for file: `file_path`/`path`/…; command: `command`/`cmd`/…;
+  search: `pattern`/`query`/`url`/…; falling back to
+  `description`/`prompt`/`skill`/`args`, then the tool name. Clipped to 160 runes.
+- **`meta`** — the tool name; for commands, `name | description` (description
+  clipped to 80).
+
+## Usage extraction → `UsageRecord[]`
+
+`scanClaudeUsage` (`usage_claude.go:14`) reuses `ScanClaude` for the session list,
+then reads every `*.jsonl` under each project directory in full
+(`scanClaudeFileUsage`, `usage_claude.go:40`). Per line, in order:
+
+1. **Skip sidechains.** `isSidechain == true` (subagent / Task tool requests) is
+   ignored entirely — not counted toward main-session usage.
+2. **Timestamp gate.** `AsTimestamp(timestamp)` parses *strings only* (RFC3339).
+   A line with no parseable timestamp is skipped. (Note the asymmetry with the
+   transcript path, which also accepts numeric timestamps.)
+3. **User line** — if `claudeIsUserPrompt(message)`, feed a prompt event to the
+   tally; then stop.
+4. **Assistant line** — feed an assistant event; for each `tool_use` block feed
+   a tool event (with the tool name and, for the `Skill` tool, the skill name).
+5. **Emit a record** only when `message.usage` exists and `sessionId` is
+   non-empty. Map the four token fields (see the usage table above);
+   `AsTokenCount` floors positive finite numbers, else `0`. `model` =
+   `message.model`.
+6. **Attribute activity** — `record.ApplyInterval(tally.TakeUntil(ts))` folds in
+   the prompt/tool/active-time increment accrued up to this record's timestamp.
+7. After the file, `lastRecord.MergeInterval(tally.Flush())` folds any trailing
+   events (prompts/tools after the last usage-bearing turn) into the last record.
+
+An assistant line without `usage` still contributes tally events; its counts
+land on the next usage-bearing record (or the last one via `Flush`).
+
+### Prompt detection (`claudeIsUserPrompt`, `usage_claude.go:109`)
+
+`content` is a string, or an array containing a `text` block. Take that text,
+trim leading whitespace, and accept it only if it is non-empty and does **not**
+start with `<` or `Caveat:`. This excludes `tool_result` / attachment lines and
+injected caveats from the prompt count.
+
+### Active time & the tally (`SessionTally`, `tally.go:36`)
+
+Events must arrive in ascending time order; out-of-order events are dropped.
+`ActiveMs` is the sum of gaps between consecutive events, each gap capped at
+`ActiveGapCapMs` (120 000 ms = 2 min), so idle time never inflates active time.
+`TakeUntil(ts)` drains events with `ts <= ts`; `Flush()` drains the rest. The
+interval carries `UserPrompts`, `ToolCalls`, `ToolCallsByName`,
+`SkillCallsByName` and `ActiveMs` onto the record.
+
+### Skill calls (`SkillOfToolUse`, `shared.go:82`)
+
+Only a `tool_use` named exactly `Skill` with a non-empty `input.skill` counts;
+the skill name is tallied in `SkillCallsByName`. All other tools contribute only
+to `ToolCallsByName`.
+
+## Aggregation & cost
+
+- `ScanAllUsage` (`usage.go:45`) concatenates records in module order and merges
+  sessions into an ordered map keyed by bare `sessionId` (last-write-wins). Each
+  session's `tokenUsage` is the 5-tuple
+  `[input, output, cacheRead, cacheWrite, 3]`, where `3` is the status flag and
+  input excludes cache traffic. `filePath` is tildified against `home`.
+- Claude is token-billed: `EstimateTokenCost` prices a record from model rates
+  (`NormalizeModelId` → `LookupModelPrice`). `credits` is omitted. `input_tokens`
+  is the non-cached input; cache reads/writes are priced separately.
+
+## Quirks & edge cases
+
+- **Index wins outright.** A non-empty `sessions-index.json` means the JSONL
+  files are never opened for scanning; stale index data is trusted as-is.
+- **`/memory/` entries are filtered** out of the index.
+- **Two-pass fallback scan.** Workspace comes from the first `cwd`-bearing user
+  line; the title comes from a separate pass that skips injected echoes.
+- **Decoding is lossy.** Directory-name → path is a heuristic; `projectPath`
+  from the index is authoritative when available.
+- **Sidechains excluded from usage** but a subagent transcript is still a normal
+  session file.
+- **Timestamp asymmetry.** Transcript accepts numeric or string timestamps;
+  usage accepts strings only.
+- **Compaction marker is a fixed Chinese literal** (`上下文已压缩`), not
+  localized.
+- **Reasoning and raw tool output never appear** as transcript entries.
+
+## Source map
+
+| Topic | Location |
+|---|---|
+| Registry entry | `registry.go:22` |
+| Session scan (index + fallback) | `claude.go` (`ScanClaude`, `scanClaudeProjectDir`, `scanClaudeFile`) |
+| Transcript loader | `transcript_claude.go` (`parseClaudeTranscript`) |
+| Content → entries, tool cards, cleaning | `transcript.go` (`entriesFromContent`, `toolCall`, `cleanUserText`) |
+| Usage extraction | `usage_claude.go` (`scanClaudeUsage`, `scanClaudeFileUsage`, `claudeIsUserPrompt`) |
+| Activity tally | `tally.go` (`SessionTally`) |
+| Aggregation | `usage.go` (`ScanAllUsage`, `ApplyInterval`, `MergeInterval`) |
+| Shared helpers | `shared.go` (`ToTitle`, `DecodePathDirName`, `SkillOfToolUse`, `AsEpochMs`, `AsTimestamp`, `AsTokenCount`) |
+| Output contract | `contract.go` (`SessionInfo`, `UsageRecord`, `Entry`, `ToolCall`) |
