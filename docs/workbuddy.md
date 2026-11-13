@@ -6,7 +6,7 @@ store into `SessionInfo`, `Entry[]` and `UsageRecord[]`.
 WorkBuddy is a split store: session **metadata** lives in a SQLite database,
 while the **transcript and usage body** live in a per-session JSONL file. The
 scanner reads only the database; the JSONL contributes its size and path at
-scan time and is parsed later by the generic transcript loader and the usage
+scan time and is parsed later by the WorkBuddy transcript loader and the usage
 extractor. This doc follows the shared section order: at a glance → on-disk
 layout → record format → session scanning → transcript parsing → usage
 extraction → aggregation & cost → quirks → source map.
@@ -20,7 +20,7 @@ extraction → aggregation & cost → quirks → source map.
 | Store directory | `~/.workbuddy` |
 | `canDeleteSessions` | `false` (`registry.go:28`; the library only reports this — deletion is the consumer's job) |
 | Session scanner | `ScanWorkbuddy` (`workbuddy.go:18`) — reads the `sessions` table of `workbuddy.db` |
-| Transcript loader | `parseGenericTranscript` (`transcript_generic.go:5`), shared with `grok` |
+| Transcript loader | `parseWorkbuddyTranscript` (`transcript_workbuddy.go:10`) |
 | Usage module | `scanWorkbuddyUsage` (`usage_workbuddy.go:19`) |
 | Billing | Token-metered against model rates; no credit accounting (`credits` omitted) |
 | Store format | SQLite metadata DB (`workbuddy.db`) + one JSONL transcript per session under `projects/` |
@@ -152,35 +152,22 @@ with `# ` or `<` is discarded as injected.
 
 ## Transcript parsing → `Entry[]`
 
-`parseGenericTranscript` (`transcript_generic.go:5`) locates the file via
+`parseWorkbuddyTranscript` (`transcript_workbuddy.go:10`) locates the file via
 `transcriptFile` (`transcript.go:161`; rejects a nil/empty path or one containing
 `#`, the SQLite-store marker), then streams it with `scanJSONLines`
-(`transcript.go:140`, per-line cap `ScanMaxTranscriptLine` = 32 MiB), calling
-`genericEntries` per record. This is the loose-shape loader shared with `grok`;
-it has no WorkBuddy-specific logic.
+(`transcript.go:140`, per-line cap `ScanMaxTranscriptLine` = 32 MiB). Per record:
 
-### `genericEntries` (`transcript.go:455`)
-
-1. `ts = mapTimestamp(obj, false)` (`transcript.go:180`) — reads `timestamp` /
-   `time` / `createdAt` / `created_at`, recursing into `message` / `payload` /
-   `data`; accepts a finite number (as-is) or an RFC3339 string. `0` when none.
-2. `role = messageRole(obj)` (`transcript.go:419`) — `roleFromString` on
-   `obj.role`, else `message.role`, else `payload.role`. If still empty, fall
-   back to `obj.type`: `user`/`user_message`/`human`/`human_message` → user;
-   `assistant`/`agent`/`agent_message`/`model`/`model_message` → assistant;
-   `system` → system.
-3. `content = messageContent(obj)` (`transcript.go:437`) — `message.content`,
-   else `obj.content`, else `payload.content`; if nil, a string `obj.message`,
-   else a string `obj.text`. No content → no entry.
-4. `entriesFromContent(role, content, ts)`.
-
-**WorkBuddy outcome.** A `message` line carries `role` (`user`/`assistant`) and
-`content`, so it renders normally. A standalone `function_call` line does
-**not**: `function_call` is not among the `type` values mapped to a role, and the
-line carries `name` rather than message `content`, so `genericEntries` returns
-nil. Tool calls are counted in usage but are not transcript entries — unless a
-`tool_use`-style block is embedded in an assistant message's `content` array,
-which `entriesFromContent` does render.
+1. `message` — `roleFromString(obj.role)` selects the role, and
+   `entriesFromContent(role, obj.content, ts)` emits text and embedded thinking
+   or tool blocks with the shared cleaners and cards.
+2. `reasoning` — `rawContent` is preferred over `content`; text blocks are
+   joined with blank lines, emitted as one assistant thinking entry, and clipped
+   to `MaxThinkingChars`.
+3. `function_call` — `name` and the decoded object or JSON-string arguments
+   become a `ToolCall`; `callId` / `call_id` / `id` is kept for result matching.
+4. `function_call_result` — the matching call is updated in place with the
+   bounded output; `status`, `failed`, `is_error`, or result-level `failed`
+   marks it failed.
 
 ### From content to entries (`entriesFromContent`, `transcript.go:238`)
 
@@ -324,8 +311,8 @@ onto the record (`SkillCallsByName` is always null for WorkBuddy).
 | Registry entry | `registry.go:28` |
 | Session scan (SQLite) | `workbuddy.go` (`ScanWorkbuddy`, `isBackgroundAutomation`, `isWorkbuddyDeleted`, `workbuddyAsText`) |
 | Project dir encoding | `workbuddy.go` (`workbuddyProjectDirName`, `truncateToByteLimitOnCodePoint`, `djb2Base36`) |
-| Transcript loader | `transcript_generic.go` (`parseGenericTranscript`) |
-| Generic record → entries | `transcript.go` (`genericEntries`, `messageRole`, `messageContent`, `mapTimestamp`) |
+| Transcript loader | `transcript_workbuddy.go` (`parseWorkbuddyTranscript`, `workbuddyReasoning`, `applyWorkbuddyToolOutput`, `workbuddyOutputText`) |
+| Record timestamp | `transcript.go` (`mapTimestamp`) |
 | Content → entries, tool cards, cleaning | `transcript.go` (`entriesFromContent`, `toolCall`, `cleanUserText`) |
 | Usage extraction | `usage_workbuddy.go` (`scanWorkbuddyUsage`, `scanWorkbuddySessionUsage`, `isWorkbuddyRealUserPrompt`, `readWorkbuddyUsage`, `readWorkbuddyModel`, `cachedTokensDetail`) |
 | Activity tally | `tally.go` (`SessionTally`) |

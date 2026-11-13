@@ -33,11 +33,13 @@ func LoadTranscript(agentID string, info SessionInfo) ([]Entry, error) {
 		return parseKimiCodeTranscript(info)
 	case "dsh":
 		return parseDshTranscript(info)
+	case "workbuddy":
+		return parseWorkbuddyTranscript(info)
 	case "opencode", "zcode":
 		return parseSessionDBTranscript(info)
 	case "hermes":
 		return parseHermesTranscript(info)
-	case "workbuddy", "grok":
+	case "grok":
 		return parseGenericTranscript(info)
 	default:
 		return parseGenericTranscript(info)
