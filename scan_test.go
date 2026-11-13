@@ -167,8 +167,8 @@ func TestScanKimiCode(t *testing.T) {
 
 func TestScanSessionsEmptyHome(t *testing.T) {
 	results := ScanSessions(t.TempDir())
-	if len(results) != 15 {
-		t.Fatalf("%d results, want 15", len(results))
+	if len(results) != 16 {
+		t.Fatalf("%d results, want 16", len(results))
 	}
 	for _, r := range results {
 		if r.AgentName == "" {

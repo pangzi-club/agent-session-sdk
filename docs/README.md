@@ -31,7 +31,7 @@ it helps). Mark any sample data as illustrative.
 
 ## Coverage
 
-15 scanned agents, in registry order. "Usage" is whether the agent has a local
+16 scanned agents, in registry order. "Usage" is whether the agent has a local
 usage module (`usage.go`); gemini, cursor, kimi and kimi-code have none.
 
 | Agent | Store dir | Transcript loader | Usage | Doc |
@@ -42,6 +42,7 @@ usage module (`usage.go`); gemini, cursor, kimi and kimi-code have none.
 | `cursor` | `.cursor` | `parseCursorTranscript` | no | [cursor.md](cursor.md) |
 | `opencode` | `.local/share/opencode` | `parseSessionDBTranscript` | yes | [opencode.md](opencode.md) |
 | `zcode` | `.zcode` | `parseSessionDBTranscript` | yes | [zcode.md](zcode.md) |
+| `cindy` | `Library/Application Support/CindyGlobal` | `parsePiTranscript` | yes | [cindy.md](cindy.md) |
 | `workbuddy` | `.workbuddy` | `parseWorkbuddyTranscript` | yes | [workbuddy.md](workbuddy.md) |
 | `pi` | `.pi` | `parsePiTranscript` | yes | [pi.md](pi.md) |
 | `dsh` | `.dsh` | `parseDshTranscript` | yes | [dsh.md](dsh.md) |

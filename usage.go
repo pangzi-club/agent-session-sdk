@@ -29,6 +29,7 @@ var usageModules = []usageModule{
 	{id: "workbuddy", name: "WorkBuddy", directory: ".workbuddy", scan: scanWorkbuddyUsage},
 	{id: "dsh", name: "Deepseek Harness", directory: ".dsh", scan: scanDshUsage},
 	{id: "pi", name: "Pi", directory: ".pi", scan: scanPiUsage},
+	{id: "cindy", name: "Cindy", directory: "Library/Application Support/CindyGlobal", scan: scanCindyUsage},
 	{id: "opencode", name: "OpenCode", directory: ".local/share/opencode", scan: scanOpenCodeUsage},
 	{id: "grok", name: "Grok Build", directory: ".grok", scan: scanGrokUsage},
 	{id: "qoder", name: "Qoder", directory: ".qoder", scan: scanQoderUsage},

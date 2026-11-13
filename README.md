@@ -11,7 +11,7 @@ session lists, transcripts and usage statistics (tokens, credits, USD cost).
 
 v0.1.0. Present: the output contract (`contract.go`, including transcript
 entries and tool calls), the agent registry, shared scan helpers, the 14
-session scanners, `ScanSessions`, usage extraction for the 11 agents with
+session scanners, `ScanSessions`, usage extraction for the 12 agents with
 local usage data, `ScanAllUsage`, `Summarize`, transcript loading
 (`LoadTranscript`, `Cache`), pricing (`EstimateTokenCost`, `NormalizeModelId`,
 `LookupModelPrice`, embedded model-prices.json) and the stateless CLI at
@@ -19,8 +19,8 @@ local usage data, `ScanAllUsage`, `Summarize`, transcript loading
 
 ## Agents
 
-15 scanned agents, in registry order: claude, codex, gemini, cursor, opencode,
-zcode, workbuddy, pi, dsh, grok, qoder, qoder-cn, kimi, kimi-code, hermes. qwen is detected by
+16 scanned agents, in registry order: claude, codex, gemini, cursor, opencode,
+zcode, cindy, workbuddy, pi, dsh, grok, qoder, qoder-cn, kimi, kimi-code, hermes. qwen is detected by
 consumers but not scanned. Session deletion stays in the consumer; the library
 only reports `canDeleteSessions`.
 
@@ -108,7 +108,7 @@ agent-session-sdk summary --agent codex,claude
 agent-session-sdk transcript --agent claude --session <sessionId> --pretty
 ```
 
-Session scanning covers 15 agents; usage and summary cover the 11 agents with
+Session scanning covers 16 agents; usage and summary cover the 12 agents with
 local usage data (no cursor / gemini / kimi / kimi-code). Qoder tokens are heuristically
 reconstructed and records keep credits for cost estimation.
 

@@ -27,6 +27,8 @@ func LoadTranscript(agentID string, info SessionInfo) ([]Entry, error) {
 		return parseCursorTranscript(info)
 	case "pi":
 		return parsePiTranscript(info)
+	case "cindy":
+		return parsePiTranscript(info)
 	case "kimi":
 		return parseKimiTranscript(info)
 	case "kimi-code":

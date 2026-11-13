@@ -25,6 +25,7 @@ var agents = []agentDef{
 	{id: "cursor", name: "Cursor", directory: ".cursor", scan: ScanCursor},
 	{id: "opencode", name: "OpenCode", directory: ".local/share/opencode", scan: ScanOpenCode},
 	{id: "zcode", name: "ZCode", directory: ".zcode", scan: ScanZcode},
+	{id: "cindy", name: "Cindy", directory: "Library/Application Support/CindyGlobal", scan: ScanCindy},
 	{id: "workbuddy", name: "WorkBuddy", directory: ".workbuddy", scan: ScanWorkbuddy},
 	{id: "pi", name: "Pi", directory: ".pi", scan: ScanPi},
 	{id: "dsh", name: "Deepseek Harness", directory: ".dsh", scan: ScanDsh},

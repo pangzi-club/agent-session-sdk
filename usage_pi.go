@@ -38,8 +38,14 @@ func scanPiFileUsage(file string) (*piFileUsage, error) {
 	if err != nil || session == nil {
 		return nil, err
 	}
-	lines := ReadAllLines(file)
+	return scanPiSessionUsage(*session, "pi")
+}
 
+func scanPiSessionUsage(session SessionInfo, agentID string) (*piFileUsage, error) {
+	if session.FilePath == nil || *session.FilePath == "" {
+		return &piFileUsage{session: session, records: []UsageRecord{}}, nil
+	}
+	lines := ReadAllLines(*session.FilePath)
 	tally := &SessionTally{}
 	records := []UsageRecord{}
 	WalkLines(lines, func(obj map[string]any) {
@@ -88,7 +94,7 @@ func scanPiFileUsage(file string) (*piFileUsage, error) {
 		}
 		record := UsageRecord{
 			SessionID:        session.ID,
-			AgentID:          "pi",
+			AgentID:          agentID,
 			Model:            AsString(message["model"]),
 			Timestamp:        timestamp,
 			InputTokens:      AsTokenCount(usage["input"]),
@@ -102,5 +108,5 @@ func scanPiFileUsage(file string) (*piFileUsage, error) {
 	if len(records) > 0 {
 		records[len(records)-1].MergeInterval(tally.Flush())
 	}
-	return &piFileUsage{session: *session, records: records}, nil
+	return &piFileUsage{session: session, records: records}, nil
 }
