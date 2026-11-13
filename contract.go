@@ -130,11 +130,15 @@ type ToolCall struct {
 // calls, never more than one. Thinking is the bounded reasoning text of an
 // assistant record; consumers that treat reasoning as noise can ignore it.
 // Text and tools parsed from the same assistant record share a timestamp
-// (epoch ms, 0 when the store records none).
+// (epoch ms, 0 when the store records none). DurationMs is the entry's active
+// span: a reasoning block's thinking time, a tool call's run time, or a text
+// record's generation time (completed - created); 0 when the store keeps no
+// timing.
 type Entry struct {
-	Role      Role       `json:"role"`
-	Text      string     `json:"text"`
-	Thinking  string     `json:"thinking,omitempty"`
-	Tools     []ToolCall `json:"tools,omitempty"`
-	Timestamp float64    `json:"timestamp"`
+	Role       Role       `json:"role"`
+	Text       string     `json:"text"`
+	Thinking   string     `json:"thinking,omitempty"`
+	Tools      []ToolCall `json:"tools,omitempty"`
+	Timestamp  float64    `json:"timestamp"`
+	DurationMs float64    `json:"durationMs,omitempty"`
 }

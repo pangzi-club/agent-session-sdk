@@ -211,7 +211,8 @@ The part `type` drives the entry:
 |---|---|
 | `text` or missing/empty | Emit a text entry (see filters below) |
 | `tool` | Emit one assistant tool entry |
-| `reasoning`, `step-start`, `step-finish`, `file`, `timeline` | Dropped (internal steps / attachments) |
+| `reasoning` | Emit an assistant thinking entry (bounded `part.text`) |
+| `step-start`, `step-finish`, `file`, `timeline` | Dropped (internal steps / attachments) |
 | anything else | Dropped (no matching case) |
 
 **Text parts.** Read `part.text`; skip when it is empty, when `part.synthetic` is
@@ -228,8 +229,19 @@ message timestamp.
 `toolCall(name, part.state.input)` (`transcript.go:344`): kind `file`/`command`/
 `search`/`other`, a clipped title from the input, meta = the tool name. Then, if
 `part.state.status` is non-empty and not `completed`, append `" | " + status` to
-`Meta` (e.g. `bash | running`). The entry is **always `RoleAssistant`** with
+`Meta` (e.g. `bash | running`). `callID` becomes `ID`, `state.input` /
+`state.output` are kept as the bounded `Input` / `Output` payloads, and `Failed`
+is set when the status is `error`. The entry is **always `RoleAssistant`** with
 exactly one `ToolCall`, regardless of the message role.
+
+**Reasoning parts.** Read `part.text` (skip if empty) and emit an assistant
+thinking entry bounded to `MaxThinkingChars`.
+
+**Timing (`Entry.DurationMs`).** Reasoning and tool entries carry their part-level
+`time.end - time.start` span; text entries carry the message's
+`time.completed - time.created` generation span. `0` when the store keeps no
+timing. Consumers can show a thinking step's duration and sum a turn's wall-clock
+work from these.
 
 ### Cache invalidation (`transcriptSignature`, `transcript.go:111`)
 

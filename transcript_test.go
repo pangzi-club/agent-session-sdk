@@ -270,6 +270,46 @@ func TestParseSessionDBTranscript(t *testing.T) {
 	}
 }
 
+func TestParseSessionDBTranscriptThinkingAndPayloads(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "zcode.db")
+	db, err := sql.Open("sqlite", "file:"+dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`
+		CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT);
+		CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, data TEXT);
+		INSERT INTO message VALUES ('m1','s1',1000,'{"role":"assistant","time":{"created":1000,"completed":4000}}');
+		INSERT INTO part VALUES ('p1','m1','s1',1000,'{"type":"reasoning","text":"Let me think.","time":{"start":1000,"end":3000}}');
+		INSERT INTO part VALUES ('p2','m1','s1',1000,'{"type":"tool","tool":"Read","callID":"call_1","state":{"status":"completed","title":"Read","input":{"file_path":"/a/b.swift"},"output":"file body","time":{"start":3000,"end":3500}}}');
+		INSERT INTO part VALUES ('p3','m1','s1',1000,'{"type":"text","text":"Done."}');
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	ref := dbPath + "#s1"
+	entries, err := parseSessionDBTranscript(SessionInfo{ID: "s1", FilePath: &ref})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("%d entries, want 3: %+v", len(entries), entries)
+	}
+	if entries[0].Thinking != "Let me think." || entries[0].DurationMs != 2000 {
+		t.Errorf("reasoning entry %+v, want thinking text and a 2000ms span", entries[0])
+	}
+	tool := entries[1].Tools[0]
+	if tool.ID != "call_1" || tool.Input == "" || tool.Output != "file body" || entries[1].DurationMs != 500 {
+		t.Errorf("tool entry %+v (dur %v), want id, input, output and a 500ms span", entries[1], entries[1].DurationMs)
+	}
+	if entries[2].Text != "Done." || entries[2].DurationMs != 3000 {
+		t.Errorf("text entry %+v, want Done. and a 3000ms generation span", entries[2])
+	}
+}
+
 func TestParseHermesTranscript(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "state.db")

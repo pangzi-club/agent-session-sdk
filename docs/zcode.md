@@ -216,10 +216,19 @@ The inner join means a message with no parts yields no rows. Per row, parse
 The part `type` drives the entry: `text`/missing → a text entry (dropped when
 empty, `synthetic == true`, or `metadata.visibility == "model-only"`); `tool` → one
 **always-assistant** tool entry built from `part.tool` + `part.state.input`, with
-`state.status` appended to `Meta` when it is neither `""` nor `completed`;
-`reasoning` / `step-start` / `step-finish` / `file` / `timeline` and anything else →
-dropped. Because each part is its own row, multiple text parts of one message
-become separate entries sharing the message timestamp.
+`state.status` appended to `Meta` when it is neither `""` nor `completed`,
+`state.input` / `state.output` kept as the bounded `Input` / `Output` payloads,
+`callID` as `ID`, and `Failed` set when the status is `error`; `reasoning` → an
+assistant thinking entry carrying the bounded `part.text`; `step-start` /
+`step-finish` / `file` / `timeline` and anything else → dropped. Because each part
+is its own row, multiple text parts of one message become separate entries
+sharing the message timestamp.
+
+**Timing (`Entry.DurationMs`).** Reasoning and tool entries carry their part-level
+`time.end - time.start` span; text entries carry the message's
+`time.completed - time.created` generation span. A consumer can show a thinking
+step's duration and sum a turn's wall-clock work from these. `0` when the store
+keeps no timing.
 
 **zcode-specific note.** The transcript reads **only `message` and `part`**. It
 never touches `model_usage`, `tool_usage`, or `message.semantics.kind` — those are

@@ -65,15 +65,24 @@ func parseSessionDBTranscript(info SessionInfo) ([]Entry, error) {
 			continue
 		}
 		role := roleFromString(firstString(message, "role"))
+		msgTime := GetMap(message["time"])
 		ts := AsEpochMs(row["message_time"])
-		if cron := GetMap(message["time"]); cron != nil {
-			if created := AsEpochMs(cron["created"]); created != nil {
+		if msgTime != nil {
+			if created := AsEpochMs(msgTime["created"]); created != nil {
 				ts = created
 			}
 		}
 		var timestamp float64
 		if ts != nil {
 			timestamp = *ts
+		}
+		// A text record's generation span; reasoning and tool parts carry
+		// their own, more precise, part-level timing below.
+		var textDuration float64
+		if msgTime != nil {
+			if completed := AsEpochMs(msgTime["completed"]); completed != nil && *completed > timestamp {
+				textDuration = *completed - timestamp
+			}
 		}
 
 		switch firstString(part, "type") {
@@ -88,23 +97,64 @@ func parseSessionDBTranscript(info SessionInfo) ([]Entry, error) {
 			if role == "" {
 				role = RoleAssistant
 			}
-			out = append(out, entriesFromContent(role, text, timestamp)...)
+			entries := entriesFromContent(role, text, timestamp)
+			for i := range entries {
+				entries[i].DurationMs = textDuration
+			}
+			out = append(out, entries...)
 		case "tool":
 			name := firstString(part, "tool")
 			if name == "" {
 				continue
 			}
 			state := GetMap(part["state"])
-			call := toolCall(name, GetMap(state["input"]))
-			if status := firstString(state, "status"); status != "" && status != "completed" {
+			input := GetMap(state["input"])
+			call := toolCall(name, input)
+			if id := firstString(part, "callID"); id != "" {
+				call.ID = id
+			}
+			if input != nil {
+				call.Input = clipText(compactJSON(input), MaxToolInputChars)
+			}
+			if raw := state["output"]; raw != nil {
+				if s := AsString(raw); s != nil {
+					call.Output = clipText(*s, MaxToolOutputChars)
+				} else {
+					call.Output = clipText(compactJSON(raw), MaxToolOutputChars)
+				}
+			}
+			status := firstString(state, "status")
+			if status != "" && status != "completed" {
 				call.Meta += " | " + status
 			}
-			out = append(out, Entry{Role: RoleAssistant, Tools: []ToolCall{call}, Timestamp: timestamp})
-		case "reasoning", "step-start", "step-finish", "file", "timeline":
+			call.Failed = status == "error"
+			out = append(out, Entry{Role: RoleAssistant, Tools: []ToolCall{call}, Timestamp: timestamp, DurationMs: partDurationMs(state["time"])})
+		case "reasoning":
+			text := firstString(part, "text")
+			if text == "" {
+				continue
+			}
+			out = append(out, Entry{Role: RoleAssistant, Thinking: clipText(text, MaxThinkingChars), Timestamp: timestamp, DurationMs: partDurationMs(part["time"])})
+		case "step-start", "step-finish", "file", "timeline":
 			// Internal steps and attachments are not part of the chat view.
 		}
 	}
 	return out, nil
+}
+
+// partDurationMs is a part's active span from its {start, end} epoch-ms time
+// object; 0 when either bound is missing or out of order.
+func partDurationMs(timeVal any) float64 {
+	t := GetMap(timeVal)
+	if t == nil {
+		return 0
+	}
+	start := AsEpochMs(t["start"])
+	end := AsEpochMs(t["end"])
+	if start == nil || end == nil || *end <= *start {
+		return 0
+	}
+	return *end - *start
 }
 
 // parseHermesTranscript looks for a messages table in Hermes' state.db. The
