@@ -44,8 +44,9 @@ func ScanCodexFile(file string) (*SessionInfo, error) {
 	}
 
 	type codexMeta struct {
-		cwd       string
-		createdAt *float64
+		cwd            string
+		createdAt      *float64
+		guardianReview bool
 	}
 	meta := ScanLines(file, func(obj map[string]any) *codexMeta {
 		if !IsStr(obj["type"], "session_meta") {
@@ -56,9 +57,16 @@ func ScanCodexFile(file string) (*SessionInfo, error) {
 		if cwd == nil || *cwd == "" {
 			return nil
 		}
-		return &codexMeta{cwd: *cwd, createdAt: AsEpochMs(payload["timestamp"])}
+		return &codexMeta{
+			cwd:            *cwd,
+			createdAt:      AsEpochMs(payload["timestamp"]),
+			guardianReview: IsStr(payload["thread_source"], "guardian_review"),
+		}
 	}, ScanMaxBytes)
 	if meta == nil {
+		return nil, nil
+	}
+	if meta.guardianReview {
 		return nil, nil
 	}
 

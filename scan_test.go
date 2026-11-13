@@ -131,6 +131,32 @@ func TestScanCodex(t *testing.T) {
 	}
 }
 
+// Guardian review threads are internal approval-assessment rollouts, not
+// standalone conversations, so they must not appear in the session list.
+func TestScanCodexSkipsGuardianReviews(t *testing.T) {
+	home := t.TempDir()
+	sessionDir := filepath.Join(home, ".codex", "sessions", "2026", "11", "06")
+	writeFile(t, filepath.Join(sessionDir, "rollout-main.jsonl"), strings.Join([]string{
+		`{"type":"session_meta","payload":{"cwd":"/Users/demo/app","thread_source":"user","timestamp":"2026-11-06T03:00:00.000Z"}}`,
+		`{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Ship the fix"}]}}`,
+	}, "\n"))
+	writeFile(t, filepath.Join(sessionDir, "rollout-guardian.jsonl"), strings.Join([]string{
+		`{"type":"session_meta","payload":{"cwd":"/Users/demo/app","thread_source":"guardian_review","timestamp":"2026-11-06T03:01:00.000Z"}}`,
+		`{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"The following is the Codex agent history whose request action you are assessing"}]}}`,
+	}, "\n"))
+
+	sessions, err := ScanCodex(filepath.Join(home, ".codex"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("%d sessions, want only the main session", len(sessions))
+	}
+	if sessions[0].ID != "rollout-main" {
+		t.Errorf("session ID = %q, want rollout-main", sessions[0].ID)
+	}
+}
+
 // Missing agent directories are normal: every agent still reports an empty list.
 func TestScanKimiCode(t *testing.T) {
 	home := t.TempDir()
