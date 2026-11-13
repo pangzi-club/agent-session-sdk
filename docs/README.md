@@ -31,8 +31,8 @@ it helps). Mark any sample data as illustrative.
 
 ## Coverage
 
-14 scanned agents, in registry order. "Usage" is whether the agent has a local
-usage module (`usage.go`); gemini, cursor and kimi have none.
+15 scanned agents, in registry order. "Usage" is whether the agent has a local
+usage module (`usage.go`); gemini, cursor, kimi and kimi-code have none.
 
 | Agent | Store dir | Transcript loader | Usage | Doc |
 |---|---|---|---|---|
@@ -49,6 +49,7 @@ usage module (`usage.go`); gemini, cursor and kimi have none.
 | `qoder` | `.qoder` | `parseClaudeTranscript` | yes | [qoder.md](qoder.md) |
 | `qoder-cn` | `.qoder-cn` | `parseClaudeTranscript` | yes | [qoder-cn.md](qoder-cn.md) |
 | `kimi` | `.kimi` | `parseKimiTranscript` | no | [kimi.md](kimi.md) |
+| `kimi-code` | `.kimi-code` | `parseKimiCodeTranscript` | no | [kimi-code.md](kimi-code.md) |
 | `hermes` | `.hermes` | `parseHermesTranscript` | yes | [hermes.md](hermes.md) |
 
 `qwen` is detected by consumers but never scanned, so it has no doc.

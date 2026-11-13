@@ -29,6 +29,8 @@ func LoadTranscript(agentID string, info SessionInfo) ([]Entry, error) {
 		return parsePiTranscript(info)
 	case "kimi":
 		return parseKimiTranscript(info)
+	case "kimi-code":
+		return parseKimiCodeTranscript(info)
 	case "dsh":
 		return parseDshTranscript(info)
 	case "opencode", "zcode":
@@ -295,9 +297,9 @@ func entriesFromContent(role Role, content any, ts float64) []Entry {
 			if text := AsString(block["text"]); text != nil {
 				texts = append(texts, *text)
 			}
-		case "thinking", "reasoning":
+		case "thinking", "reasoning", "think":
 			flush()
-			if text := firstString(block, "thinking", "reasoning", "text"); text != "" {
+			if text := firstString(block, "thinking", "think", "reasoning", "text"); text != "" {
 				out = append(out, Entry{Role: role, Thinking: clipText(text, MaxThinkingChars), Timestamp: ts})
 			}
 		case "tool_use", "tool_call", "toolCall", "tool-call", "function_call":

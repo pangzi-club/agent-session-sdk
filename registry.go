@@ -32,6 +32,7 @@ var agents = []agentDef{
 	{id: "qoder", name: "Qoder", directory: ".qoder", scan: ScanQoder},
 	{id: "qoder-cn", name: "Qoder CN", directory: ".qoder-cn", scan: ScanQoder},
 	{id: "kimi", name: "Kimi", directory: ".kimi", scan: ScanKimi},
+	{id: "kimi-code", name: "Kimi Code", directory: ".kimi-code", scan: ScanKimiCode},
 	{id: "hermes", name: "Hermes", directory: ".hermes", scan: ScanHermes},
 }
 

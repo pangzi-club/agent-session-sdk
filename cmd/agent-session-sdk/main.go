@@ -34,8 +34,8 @@ Flags:
   --cost           Usage subcommand only: append costUsd / costUnpricedTokens per record
   --pretty         Indent output for readability
 
-Session scanning covers 14 agents: claude codex gemini cursor opencode zcode
-workbuddy pi dsh grok qoder qoder-cn kimi hermes. Usage / summary cover the
+Session scanning covers 15 agents: claude codex gemini cursor opencode zcode
+workbuddy pi dsh grok qoder qoder-cn kimi kimi-code hermes. Usage / summary cover the
 agents with local usage data: claude codex zcode workbuddy dsh pi opencode grok
 qoder qoder-cn hermes. Qoder / qoder-cn tokens are heuristically reconstructed
 from context ratio + reply length, and records keep credits for cost

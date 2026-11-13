@@ -19,8 +19,8 @@ local usage data, `ScanAllUsage`, `Summarize`, transcript loading
 
 ## Agents
 
-14 scanned agents, in registry order: claude, codex, gemini, cursor, opencode,
-zcode, workbuddy, pi, dsh, grok, qoder, qoder-cn, kimi, hermes. qwen is detected by
+15 scanned agents, in registry order: claude, codex, gemini, cursor, opencode,
+zcode, workbuddy, pi, dsh, grok, qoder, qoder-cn, kimi, kimi-code, hermes. qwen is detected by
 consumers but not scanned. Session deletion stays in the consumer; the library
 only reports `canDeleteSessions`.
 
@@ -108,8 +108,8 @@ agent-session-sdk summary --agent codex,claude
 agent-session-sdk transcript --agent claude --session <sessionId> --pretty
 ```
 
-Session scanning covers 14 agents; usage and summary cover the 11 agents with
-local usage data (no cursor / gemini / kimi). Qoder tokens are heuristically
+Session scanning covers 15 agents; usage and summary cover the 11 agents with
+local usage data (no cursor / gemini / kimi / kimi-code). Qoder tokens are heuristically
 reconstructed and records keep credits for cost estimation.
 
 ## Price table

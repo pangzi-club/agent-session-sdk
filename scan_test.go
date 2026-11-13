@@ -132,10 +132,43 @@ func TestScanCodex(t *testing.T) {
 }
 
 // Missing agent directories are normal: every agent still reports an empty list.
+func TestScanKimiCode(t *testing.T) {
+	home := t.TempDir()
+	sessionDir := filepath.Join(home, ".kimi-code", "sessions", "wd_app_demo", "session_s1")
+	file := filepath.Join(sessionDir, "agents", "main", "wire.jsonl")
+	writeFile(t, filepath.Join(home, ".kimi-code", "session_index.jsonl"), strings.Join([]string{
+		`{"sessionId":"session_s1","sessionDir":"` + sessionDir + `","workDir":"/Users/demo/app"}`,
+	}, "\n"))
+	writeFile(t, filepath.Join(sessionDir, "state.json"), `{
+		"id":"session_s1","cwd":"/Users/demo/app","title":"Stored title",
+		"createdAt":1790000000000,"updatedAt":1790000060000
+	}`)
+	writeFile(t, file, strings.Join([]string{
+		`{"type":"metadata","protocol_version":"1.5","created_at":1790000000000}`,
+		`{"type":"agent.message.appended","time":1790000000000,"message":{"message":{"role":"user","content":[{"type":"text","text":"Read the new store"}]}}}`,
+	}, "\n"))
+
+	sessions, err := ScanKimiCode(filepath.Join(home, ".kimi-code"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("%d sessions, want 1", len(sessions))
+	}
+	s := sessions[0]
+	if s.ID != "session_s1" || s.Workspace != "/Users/demo/app" ||
+		s.Title == nil || *s.Title != "Stored title" || s.FilePath == nil || *s.FilePath != file {
+		t.Errorf("session %+v, want the state metadata and wire path", s)
+	}
+	if s.CreatedAt != 1790000000000 || s.UpdatedAt != 1790000060000 {
+		t.Errorf("timestamps %v/%v, want the state timestamps", s.CreatedAt, s.UpdatedAt)
+	}
+}
+
 func TestScanSessionsEmptyHome(t *testing.T) {
 	results := ScanSessions(t.TempDir())
-	if len(results) != 14 {
-		t.Fatalf("%d results, want 14", len(results))
+	if len(results) != 15 {
+		t.Fatalf("%d results, want 15", len(results))
 	}
 	for _, r := range results {
 		if r.AgentName == "" {
