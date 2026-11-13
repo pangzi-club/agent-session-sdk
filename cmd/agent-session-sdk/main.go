@@ -1,8 +1,10 @@
-// agent-session-sdk: stateless CLI over the agentsession library. Scans local
+// agent-session-sdk: CLI over the agentsession library. Scans local
 // coding-agent stores and prints session lists, usage, summaries or one
 // session's transcript as JSON on stdout. Pure Go dependencies only (no cgo),
 // single-file distribution, one cross-compile command away. The session and
-// usage shapes stay field-compatible with agent-view's ipc-contract.ts.
+// usage shapes stay field-compatible with agent-view's ipc-contract.ts. The
+// optional --index path persists a derived session index in SQLite and only
+// re-scans agent stores whose file signatures changed.
 package main
 
 import (
@@ -18,13 +20,14 @@ import (
 const helpText = `agent-session-sdk — session / usage / transcript scanner for local agent stores
 
 Usage:
-  agent-session-sdk <sessions|usage|summary|transcript> [flags]
+  agent-session-sdk <sessions|usage|summary|transcript|search> [flags]
 
 Subcommands:
   sessions    Session list for all agents (SessionScanResult[] JSON)
   usage       Token usage records for all agents ({records, sessions} JSON)
   summary     Per-agent usage overview (sessions / requests / total tokens / active time)
   transcript  One session's transcript (Entry[] JSON, needs --agent and --session)
+  search      Search indexed session titles, workspaces and ids (query first)
   help        Show this help
 
 Flags:
@@ -32,9 +35,13 @@ Flags:
   --agent <ids>    Only process the given agents, comma-separated (e.g. --agent codex,claude)
   --session <id>   Transcript subcommand only: the session id to load
   --cost           Usage subcommand only: append costUsd / costUnpricedTokens per record
+  --index          Sessions/transcript only: use <home>/.agent-session-sdk/home.sqlite
+  --no-refresh     Indexed reads only: read SQLite without checking stores
+  --limit <n>      Indexed sessions/search only: limit output (0 means unlimited)
+  --offset <n>     Indexed sessions/search only: skip leading results
   --pretty         Indent output for readability
 
-Session scanning covers 15 agents: claude codex gemini cursor opencode zcode
+Session scanning covers 16 agents: claude codex gemini cursor opencode zcode
 workbuddy pi dsh grok qoder qoder-cn kimi kimi-code hermes. Usage / summary cover the
 agents with local usage data: claude codex zcode workbuddy dsh pi opencode grok
 qoder qoder-cn hermes. Qoder / qoder-cn tokens are heuristically reconstructed
@@ -46,14 +53,21 @@ Examples:
   agent-session-sdk usage --home /Users/demo --cost | jq '.records | length'
   agent-session-sdk summary --agent codex,claude
   agent-session-sdk transcript --agent claude --session <sessionId> --pretty
+  agent-session-sdk sessions --index --agent codex --pretty
+  agent-session-sdk search 登录 --agent claude --limit 20
 `
 
 type cliOptions struct {
-	home    string
-	agents  map[string]bool
-	pretty  bool
-	session string
-	cost    bool
+	home      string
+	agents    map[string]bool
+	pretty    bool
+	session   string
+	cost      bool
+	index     bool
+	noRefresh bool
+	limit     int
+	offset    int
+	search    string
 }
 
 func main() {
@@ -72,13 +86,19 @@ func main() {
 	var payload any
 	switch command {
 	case "sessions":
-		payload = filterSessions(agentsession.ScanSessions(opts.home), opts.agents)
+		if opts.index {
+			payload = listIndexedSessions(opts)
+		} else {
+			payload = filterSessions(agentsession.ScanSessions(opts.home), opts.agents)
+		}
 	case "usage":
 		payload = costify(filterUsage(agentsession.ScanAllUsage(opts.home), opts.agents), opts.cost)
 	case "summary":
 		payload = filterSummaries(agentsession.Summarize(agentsession.ScanAllUsage(opts.home)), opts.agents)
 	case "transcript":
 		payload = loadTranscript(opts)
+	case "search":
+		payload = searchIndexedSessions(opts)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown subcommand: %s\n\n", command)
 		fmt.Fprint(os.Stderr, helpText)
@@ -97,6 +117,37 @@ func main() {
 // parseFlags handles the common flags (--home / --agent / --pretty) plus the
 // per-subcommand ones (--session, --cost), and validates agent ids.
 func parseFlags(command string, args []string) *cliOptions {
+	searchQuery := ""
+	if command == "search" {
+		flags := make([]string, 0, len(args))
+		valueFlags := map[string]bool{"home": true, "agent": true, "session": true, "limit": true, "offset": true}
+		for i := 0; i < len(args); i++ {
+			arg := args[i]
+			if strings.HasPrefix(arg, "-") {
+				flags = append(flags, arg)
+				name := strings.TrimLeft(arg, "-")
+				if !strings.Contains(arg, "=") && valueFlags[name] {
+					if i+1 >= len(args) {
+						fmt.Fprintf(os.Stderr, "flag %s needs a value\n", arg)
+						os.Exit(2)
+					}
+					i++
+					flags = append(flags, args[i])
+				}
+				continue
+			}
+			if searchQuery != "" {
+				fmt.Fprintf(os.Stderr, "unknown argument: %s\n", arg)
+				os.Exit(2)
+			}
+			searchQuery = arg
+		}
+		if searchQuery == "" {
+			fmt.Fprintln(os.Stderr, "search needs <query>")
+			os.Exit(2)
+		}
+		args = flags
+	}
 	fs := flag.NewFlagSet(command, flag.ExitOnError)
 	fs.Usage = func() { fmt.Fprint(os.Stderr, helpText) }
 	opts := &cliOptions{agents: map[string]bool{}}
@@ -105,13 +156,18 @@ func parseFlags(command string, args []string) *cliOptions {
 	fs.BoolVar(&opts.pretty, "pretty", false, "indent output")
 	fs.StringVar(&opts.session, "session", "", "session id (transcript only)")
 	fs.BoolVar(&opts.cost, "cost", false, "append cost fields (usage only)")
+	fs.BoolVar(&opts.index, "index", false, "use the persistent session index")
+	fs.BoolVar(&opts.noRefresh, "no-refresh", false, "read the index without refreshing")
+	fs.IntVar(&opts.limit, "limit", 0, "limit indexed results (0 means unlimited)")
+	fs.IntVar(&opts.offset, "offset", 0, "skip leading indexed results")
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
 	}
-	if fs.NArg() > 0 {
-		fmt.Fprintf(os.Stderr, "unknown argument: %s\n", fs.Arg(0))
+	if remaining := fs.Args(); len(remaining) > 0 {
+		fmt.Fprintf(os.Stderr, "unknown argument: %s\n", remaining[0])
 		os.Exit(2)
 	}
+	opts.search = searchQuery
 	for _, id := range strings.Split(*agentList, ",") {
 		if id = strings.TrimSpace(id); id != "" {
 			if !agentsession.IsKnownAgent(id) {
@@ -131,6 +187,26 @@ func parseFlags(command string, args []string) *cliOptions {
 			fmt.Fprintln(os.Stderr, "transcript needs --session <id>")
 			os.Exit(2)
 		}
+	}
+	if opts.index && command != "sessions" && command != "transcript" {
+		fmt.Fprintln(os.Stderr, "--index is valid for sessions and transcript only")
+		os.Exit(2)
+	}
+	if opts.noRefresh && ((command == "sessions" || command == "transcript") && !opts.index) {
+		fmt.Fprintln(os.Stderr, "--no-refresh needs --index")
+		os.Exit(2)
+	}
+	if opts.noRefresh && command != "sessions" && command != "search" && command != "transcript" {
+		fmt.Fprintln(os.Stderr, "--no-refresh is valid for indexed sessions, search and transcript only")
+		os.Exit(2)
+	}
+	if (command != "search" && (command != "sessions" || !opts.index)) && (opts.limit != 0 || opts.offset != 0) {
+		fmt.Fprintln(os.Stderr, "--limit/--offset are valid for indexed sessions and search only")
+		os.Exit(2)
+	}
+	if opts.limit < 0 || opts.offset < 0 {
+		fmt.Fprintln(os.Stderr, "--limit/--offset cannot be negative")
+		os.Exit(2)
 	}
 	if opts.home == "" {
 		home, err := os.UserHomeDir()
@@ -179,12 +255,98 @@ func costify(scan agentsession.UsageScan, withCost bool) any {
 	return out
 }
 
+func selectedAgentIDs(selected map[string]bool) []string {
+	if len(selected) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(selected))
+	for _, id := range agentsession.KnownAgentIDs() {
+		if selected[id] {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+func listIndexedSessions(opts *cliOptions) any {
+	index, err := agentsession.OpenSessionIndex(opts.home)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to open session index: %v\n", err)
+		return nil
+	}
+	defer index.Close()
+	if !opts.noRefresh {
+		if _, err := index.Refresh(selectedAgentIDs(opts.agents)...); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to refresh session index: %v\n", err)
+			return nil
+		}
+	}
+	results, err := index.List(agentsession.SessionIndexQuery{
+		AgentIDs: selectedAgentIDs(opts.agents),
+		Limit:    opts.limit,
+		Offset:   opts.offset,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to query session index: %v\n", err)
+		return nil
+	}
+	return results
+}
+
+func searchIndexedSessions(opts *cliOptions) any {
+	index, err := agentsession.OpenSessionIndex(opts.home)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to open session index: %v\n", err)
+		return nil
+	}
+	defer index.Close()
+	if !opts.noRefresh {
+		if _, err := index.Refresh(selectedAgentIDs(opts.agents)...); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to refresh session index: %v\n", err)
+			return nil
+		}
+	}
+	results, err := index.List(agentsession.SessionIndexQuery{
+		AgentIDs: selectedAgentIDs(opts.agents),
+		Search:   opts.search,
+		Limit:    opts.limit,
+		Offset:   opts.offset,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to search session index: %v\n", err)
+		return nil
+	}
+	return results
+}
+
 func loadTranscript(opts *cliOptions) any {
 	var agentID string
 	for id := range opts.agents {
 		agentID = id
 	}
 	var info *agentsession.SessionInfo
+	if opts.index {
+		index, err := agentsession.OpenSessionIndex(opts.home)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to open session index: %v\n", err)
+			return nil
+		}
+		if !opts.noRefresh {
+			if _, err := index.Refresh(agentID); err != nil {
+				index.Close()
+				fmt.Fprintf(os.Stderr, "failed to refresh session index: %v\n", err)
+				return nil
+			}
+		}
+		info, err = index.Get(agentID, opts.session)
+		if err != nil {
+			index.Close()
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			return nil
+		}
+		index.Close()
+		return transcriptEntries(agentID, *info)
+	}
 	for _, result := range agentsession.ScanSessions(opts.home) {
 		if result.AgentID != agentID {
 			continue
@@ -200,7 +362,11 @@ func loadTranscript(opts *cliOptions) any {
 		fmt.Fprintf(os.Stderr, "session %q not found for agent %q\n", opts.session, agentID)
 		return nil
 	}
-	entries, err := agentsession.LoadTranscript(agentID, *info)
+	return transcriptEntries(agentID, *info)
+}
+
+func transcriptEntries(agentID string, info agentsession.SessionInfo) any {
+	entries, err := agentsession.LoadTranscript(agentID, info)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to load transcript: %v\n", err)
 		return nil
