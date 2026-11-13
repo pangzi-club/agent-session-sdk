@@ -381,6 +381,12 @@ var searchTools = map[string]bool{
 	"grep_search": true, "file_search": true, "web_search": true, "web_fetch": true,
 }
 
+// codexCommands are Codex rollout's shell tools: their arguments carry the
+// command line, so they map to ToolCommand and a command title.
+var codexCommands = map[string]bool{
+	"exec_command": true, "local_shell": true, "shell": true,
+}
+
 // toolCall builds a display card from a tool name and its parsed input.
 func toolCall(name string, input map[string]any) ToolCall {
 	lower := strings.ToLower(name)
@@ -389,7 +395,8 @@ func toolCall(name string, input map[string]any) ToolCall {
 	case fileTools[lower]:
 		kind = ToolFile
 	case lower == "bash" || lower == "shell" || lower == "terminal" ||
-		lower == "run_terminal_cmd" || lower == "execute_command" || lower == "run_command":
+		lower == "run_terminal_cmd" || lower == "execute_command" || lower == "run_command" ||
+		codexCommands[lower]:
 		kind = ToolCommand
 	case searchTools[lower]:
 		kind = ToolSearch
@@ -401,6 +408,9 @@ func toolCall(name string, input map[string]any) ToolCall {
 		title = firstString(input, "file_path", "filePath", "path", "notebook_path", "target_file", "filename")
 	case ToolCommand:
 		title = firstString(input, "command", "cmd", "script", "commandLine")
+		if title == "" {
+			title = commandArrayTitle(input)
+		}
 	case ToolSearch:
 		title = firstString(input, "pattern", "query", "url", "path", "glob")
 	}
@@ -419,6 +429,27 @@ func toolCall(name string, input map[string]any) ToolCall {
 		}
 	}
 	return ToolCall{Name: name, Title: title, Meta: meta, Kind: kind}
+}
+
+// commandArrayTitle joins Codex's cmd argument array ("cmd": ["ls", "-la"])
+// into one command line.
+func commandArrayTitle(input map[string]any) string {
+	parts, ok := input["cmd"].([]any)
+	if !ok {
+		return ""
+	}
+	var b strings.Builder
+	for i, p := range parts {
+		s, ok := p.(string)
+		if !ok {
+			return ""
+		}
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteString(s)
+	}
+	return b.String()
 }
 
 // firstString returns the first non-empty string field among keys.

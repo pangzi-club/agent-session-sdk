@@ -72,16 +72,18 @@ Common fields:
 
 ### `response_item` payloads
 
-`payload.type` selects the item. The transcript switch handles only `message`,
-`function_call` and `custom_tool_call`; everything else is ignored.
+`payload.type` selects the item. The transcript switch handles `message`,
+`reasoning`, `function_call`/`custom_tool_call` and
+`function_call_output`/`custom_tool_call_output`; everything else is ignored.
 
 | `payload.type` | Shape | Treatment |
 |---|---|---|
 | `message` | `{ type, role, content[] }` | Transcript text; scan title (role `user`); usage prompt/assistant event |
-| `function_call` | `{ type, name, arguments }` | Tool card (`arguments` is usually a JSON string) |
-| `custom_tool_call` | `{ type, name, arguments \| input }` | Tool card |
-| `reasoning` | … | Dropped — the switch never matches it |
-| `function_call_output` | … | Dropped — raw tool output is noise |
+| `function_call` | `{ type, name, call_id, arguments }` | Tool card (`arguments` is usually a JSON string) |
+| `custom_tool_call` | `{ type, name, call_id, arguments \| input }` | Tool card |
+| `reasoning` | `{ type, summary[] }` | Thinking entry — the summary paragraphs join into `Entry.Thinking` |
+| `function_call_output` | `{ type, call_id, output }` | Paired back onto the matching call's card: `Output`, `Failed` |
+| `custom_tool_call_output` | `{ type, call_id, output }` | Same pairing |
 
 `message.content` is an array of typed blocks, each `{ type, text }`:
 `input_text` for user turns, `output_text` for assistant turns (plain `text` is
@@ -178,12 +180,22 @@ considered; a nil `payload` is skipped. Per record:
 - **`payload.type == "message"`** — `role = roleFromString(payload.role)`
   (`user`/`assistant`/`system`/`developer` map to roles; anything else → skip),
   then `entriesFromContent(role, payload.content, ts)`.
+- **`payload.type == "reasoning"`** — the `summary[]` paragraphs
+  (`{type: "summary_text", text}`) join with a blank line into one assistant
+  thinking entry (`Entry.Thinking`, clipped to `MaxThinkingChars`); no
+  summaries → no entry.
 - **`payload.type == "function_call"` or `"custom_tool_call"`** — read `name`
   (empty → skip); `input = payload.arguments ?? payload.input`; decode it with
   `argumentsMap`; emit one assistant `Entry` carrying exactly one
-  `toolCall(name, input)`.
-- **Any other payload type** (`reasoning`, `function_call_output`, …) produces
-  no entry.
+  `toolCall(name, input)` with `ID` from `payload.call_id` (falling back to
+  `payload.id`).
+- **`payload.type == "function_call_output"` or
+  `"custom_tool_call_output"`** — `applyCodexToolOutput` matches `call_id`
+  against the emitted cards and fills the first unpaired one: `Output` from
+  the string (or `{output}` / first text of `{content[]}`), clipped to
+  `MaxToolOutputChars`; `Failed` from the `Process exited with code N` header
+  being nonzero. No matching call, empty id or empty text → no-op.
+- **Any other payload type** produces no entry.
 
 Unlike Claude there is **no compaction marker**: Codex emits no
 `compact_boundary`-style system entry (Claude's fixed `上下文已压缩` literal has
@@ -227,17 +239,19 @@ For Codex the input is `argumentsMap(payload.arguments ?? payload.input)`
 unmarshalled; a parse failure yields nil. The card:
 
 - **`kind`** — `file` (`apply_patch`, `read_file`, `write_file`, `edit_file`, …),
-  `command` (`shell`, `local_shell`, `bash`, `run_terminal_cmd`,
+  `command` (`exec_command`, `local_shell`, `shell`, `bash`, `run_terminal_cmd`,
   `execute_command`, …), `search` (`grep`, `glob`, `web_search`, …), else
   `other`.
-- **`title`** — for file: `file_path`/`path`/…; command: `command`/`cmd`/…;
+- **`title`** — for file: `file_path`/`path`/…; command: `command`/`cmd`/…
+  (an array-valued `cmd`, Codex's usual shape, joins into one command line);
   search: `pattern`/`query`/`url`/…; falling back to
   `description`/`prompt`/`skill`/`args`, then the tool name. Clipped to 160 runes.
 - **`meta`** — the tool name; for commands, `name | description` (description
   clipped to 80).
 
-`firstString` accepts **string values only**, so a non-string argument (e.g. an
-array-valued `command`) yields no title and the card falls back to the tool name.
+`firstString` accepts **string values only**; the array-valued `cmd` goes
+through `commandArrayTitle` instead, which requires every element to be a
+string or it yields no title.
 
 ## Usage extraction → `UsageRecord[]`
 
@@ -341,8 +355,11 @@ skill accounting (unlike Claude's `Skill` tool).
 - **Two different AGENTS.md literals.** The title/transcript path treats `# ` as
   injected and drops the lowercase `# agents.md instructions` prefix; usage
   prompt detection excludes the uppercase `# AGENTS.md`.
-- **Reasoning and tool output never appear.** They are separate `response_item`
-  types (`reasoning`, `function_call_output`) the transcript switch never matches.
+- **Reasoning is summary-only.** The rollout keeps redacted raw reasoning; the
+  transcript surfaces only the `summary[]` paragraphs of a `reasoning` item.
+- **Tool output arrives separately.** `function_call_output` records follow
+  their calls; `applyCodexToolOutput` pairs them by `call_id` (an unpaired or
+  empty output is dropped).
 - **No compaction marker entry** (no Codex counterpart to Claude's
   `上下文已压缩`).
 - **Timestamp asymmetry.** The transcript (`mapTimestamp`) accepts numeric or
