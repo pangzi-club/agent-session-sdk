@@ -214,6 +214,125 @@ func TestParseDshTranscript(t *testing.T) {
 	}
 }
 
+// writeDshSession zstd-compresses JSONL lines into a DSH session fixture.
+func writeDshSession(t *testing.T, file string, lines []string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	enc, err := zstd.NewWriter(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer enc.Close()
+	if err := os.WriteFile(file, enc.EncodeAll([]byte(strings.Join(lines, "\n")), nil), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestParseDshTranscriptAssistant(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "session.v4.jsonl.zstd")
+	writeDshSession(t, file, []string{
+		`{"type":"session","version":4,"id":"d1","cwd":"/app","time":1000}`,
+		`{"type":"agent/inbox/spliced","time":1000,"data":{"inserted":[{"id":"u1","role":"user","content":[{"type":"text","text":"Fix it"}]}]}}`,
+		`{"type":"user/message","time":1001,"data":{"id":"u1","role":"user","content":[{"type":"text","text":"Fix it"}]}}`,
+		`{"type":"assistant/message","time":1002,"data":{"message":{"role":"assistant","content":[{"type":"reasoning","text":"Plan first."},{"type":"text","text":"On it."},{"type":"tool-call","id":"c1","name":"bash","arguments":"{\"command\":\"go test\"}"}]}}}`,
+		`{"type":"tool/call","time":1003,"data":{"callId":"c1","name":"bash","arguments":"{\"command\":\"go test\"}"}}`,
+		`{"type":"tool/result","time":1005,"data":{"message":{"role":"tool","toolCallId":"c1","isError":false,"content":[{"type":"text","text":"ok"}]}}}`,
+	})
+
+	entries, err := parseDshTranscript(transcriptInfo(t, "d1", file))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 4 {
+		t.Fatalf("%d entries, want 4 (user, thinking, text, tool): %+v", len(entries), entries)
+	}
+	if entries[0].Role != RoleUser || entries[0].Text != "Fix it" {
+		t.Errorf("user entry %+v, want the deduplicated prompt", entries[0])
+	}
+	if entries[1].Thinking != "Plan first." {
+		t.Errorf("thinking entry %+v, want the reasoning block", entries[1])
+	}
+	if entries[2].Text != "On it." {
+		t.Errorf("text entry %+v, want the assistant text", entries[2])
+	}
+	call := entries[3].Tools[0]
+	if call.Name != "bash" || call.Title != "go test" || call.Kind != ToolCommand || call.ID != "c1" {
+		t.Errorf("tool %+v, want a bash command card", call)
+	}
+	if call.Output != "ok" || call.Failed {
+		t.Errorf("tool output %q failed %v, want the paired result", call.Output, call.Failed)
+	}
+	if entries[3].DurationMs != 2 {
+		t.Errorf("duration %v, want tool/call→tool/result span 2", entries[3].DurationMs)
+	}
+}
+
+func TestParseDshTranscriptV3ToolResult(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "session.v3.jsonl.zstd")
+	writeDshSession(t, file, []string{
+		`{"type":"session","version":3,"id":"d1","cwd":"/app","time":1000}`,
+		`{"type":"assistant/message","time":1002,"data":{"message":{"role":"assistant","content":[{"type":"tool-call","id":"c1","name":"read","arguments":"{\"path\":\"a.go\"}"}]}}}`,
+		`{"type":"tool/result","time":1004,"data":{"message":{"role":"user","source":{"callId":"c1","kind":"tool"},"content":[{"type":"tool-result","toolCallId":"c1","isError":true,"content":[{"type":"text","text":"boom"}]}]}}}`,
+	})
+
+	entries, err := parseDshTranscript(transcriptInfo(t, "d1", file))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || len(entries[0].Tools) != 1 {
+		t.Fatalf("entries %+v, want one tool card", entries)
+	}
+	call := entries[0].Tools[0]
+	if call.Output != "boom" || !call.Failed {
+		t.Errorf("tool %+v, want the nested v3 result paired as failed", call)
+	}
+}
+
+func TestParseDshTranscriptToolCallFallback(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "session.v4.jsonl.zstd")
+	writeDshSession(t, file, []string{
+		`{"type":"session","version":4,"id":"d1","cwd":"/app","time":1000}`,
+		`{"type":"tool/call","time":1003,"data":{"callId":"c1","name":"bash","arguments":"{\"command\":\"ls\"}"}}`,
+		`{"type":"tool/result","time":1005,"data":{"message":{"toolCallId":"c1","content":[{"type":"text","text":"out"}]}}}`,
+	})
+
+	entries, err := parseDshTranscript(transcriptInfo(t, "d1", file))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || len(entries[0].Tools) != 1 {
+		t.Fatalf("entries %+v, want a card from the tool/call event alone", entries)
+	}
+	call := entries[0].Tools[0]
+	if call.Name != "bash" || call.Title != "ls" || call.Output != "out" {
+		t.Errorf("tool %+v, want the fallback card with its result", call)
+	}
+	if entries[0].DurationMs != 2 {
+		t.Errorf("duration %v, want 2", entries[0].DurationMs)
+	}
+}
+
+func TestParseDshTranscriptInjectedUser(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "session.v4.jsonl.zstd")
+	writeDshSession(t, file, []string{
+		`{"type":"session","version":4,"id":"d1","cwd":"/app","time":1000}`,
+		`{"type":"user/message","time":1000,"data":{"id":"i1","role":"user","source":{"kind":"runtime-context"},"content":[{"type":"text","text":"Current runtime context. snapshot"}]}}`,
+		`{"type":"agent/inbox/spliced","time":1001,"data":{"inserted":[{"id":"i2","role":"user","source":{"kind":"plugin"},"content":[{"type":"text","text":"Current runtime context. injected"}]}]}}`,
+		`{"type":"user/message","time":1002,"data":{"id":"u1","role":"user","source":{"kind":"user"},"content":[{"type":"text","text":"Real question"}]}}`,
+		`{"type":"user/message","time":1003,"data":{"id":"u1","role":"user","source":{"kind":"user"},"content":[{"type":"text","text":"Real question"}]}}`,
+	})
+
+	entries, err := parseDshTranscript(transcriptInfo(t, "d1", file))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Text != "Real question" {
+		t.Fatalf("entries %+v, want only the real user message", entries)
+	}
+}
+
 func TestParseGeminiTranscript(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "logs.json")

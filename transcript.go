@@ -300,7 +300,7 @@ func entriesFromContent(role Role, content any, ts float64) []Entry {
 			if text := firstString(block, "thinking", "reasoning", "text"); text != "" {
 				out = append(out, Entry{Role: role, Thinking: clipText(text, MaxThinkingChars), Timestamp: ts})
 			}
-		case "tool_use", "tool_call", "toolCall", "function_call":
+		case "tool_use", "tool_call", "toolCall", "tool-call", "function_call":
 			flush()
 			if call, ok := toolFromBlock(block); ok {
 				out = append(out, Entry{Role: RoleAssistant, Tools: []ToolCall{call}, Timestamp: ts})

@@ -127,9 +127,13 @@ func ScanDshFile(file string) (*SessionInfo, error) {
 	}
 
 	// First user input (inserted[].role === "user" on agent/inbox/spliced
-	// lines) becomes the title; also track whether any user input appeared at
-	// all — none means a blank session (created in DSH but never messaged).
+	// lines) becomes the fallback title; also track whether any user input
+	// appeared at all — none means a blank session (created in DSH but never
+	// messaged).
 	title, sawUserInput := dshUserInput(lines)
+	if t := dshSessionTitle(lines); t != nil {
+		title = t
+	}
 
 	mtimeMs := FloorMtimeMs(info)
 	createdAt := mtimeMs
@@ -151,6 +155,22 @@ func ScanDshFile(file string) (*SessionInfo, error) {
 		SizeBytes: float64(info.Size()),
 		FilePath:  &file,
 	}, nil
+}
+
+// dshSessionTitle returns the title of the last session/title event: DSH first
+// writes a fallback (the truncated first prompt), then replaces it with the
+// LLM-generated title. nil when the store keeps no title event.
+func dshSessionTitle(lines []string) *string {
+	var title *string
+	WalkLines(lines, func(obj map[string]any) {
+		if !IsStr(obj["type"], "session/title") {
+			return
+		}
+		if t := FirstLineTitle(GetMap(obj["data"])["title"]); t != nil {
+			title = t
+		}
+	})
+	return title
 }
 
 // dshUserInput mirrors readDshUserInput in dsh.ts: the first user input text

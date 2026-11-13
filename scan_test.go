@@ -159,3 +159,36 @@ func TestScanClaudeIgnoresUnparsableFile(t *testing.T) {
 		t.Fatalf("%d sessions, want 0", len(sessions))
 	}
 }
+
+// DSH titles come from the last session/title event (the LLM-generated one
+// replaces the fallback); without title events the first user input is used.
+func TestScanDshFileTitle(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "session-x", "session.v4.jsonl.zstd")
+	writeDshSession(t, file, []string{
+		`{"type":"session","version":4,"id":"session-x","cwd":"/app","createdAt":1000,"time":1000}`,
+		`{"type":"agent/inbox/spliced","time":1001,"data":{"inserted":[{"id":"u1","role":"user","content":[{"type":"text","text":"First prompt text"}]}]}}`,
+		`{"type":"session/title","time":1002,"data":{"source":{"kind":"fallback"},"title":"First prompt"}}`,
+		`{"type":"session/title","time":1003,"data":{"source":{"kind":"provider"},"title":"Generated title"}}`,
+	})
+	info, err := ScanDshFile(file)
+	if err != nil || info == nil {
+		t.Fatalf("ScanDshFile = %v, %v", info, err)
+	}
+	if info.Title == nil || *info.Title != "Generated title" {
+		t.Errorf("title %v, want the last session/title event", info.Title)
+	}
+
+	noTitle := filepath.Join(dir, "session-y", "session.v4.jsonl.zstd")
+	writeDshSession(t, noTitle, []string{
+		`{"type":"session","version":4,"id":"session-y","cwd":"/app","createdAt":1000,"time":1000}`,
+		`{"type":"agent/inbox/spliced","time":1001,"data":{"inserted":[{"id":"u1","role":"user","content":[{"type":"text","text":"First prompt text"}]}]}}`,
+	})
+	info, err = ScanDshFile(noTitle)
+	if err != nil || info == nil {
+		t.Fatalf("ScanDshFile = %v, %v", info, err)
+	}
+	if info.Title == nil || *info.Title != "First prompt text" {
+		t.Errorf("title %v, want the first user input fallback", info.Title)
+	}
+}

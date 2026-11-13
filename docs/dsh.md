@@ -64,10 +64,16 @@ unparseable lines silently skipped. Every event carries a numeric millisecond
 | `type` | Meaning | Fields read |
 |---|---|---|
 | `session` | Session header (first line) | `version` (number, ≥ 3), `cwd` (required, non-empty), `createdAt` |
-| `agent/inbox/spliced` | Messages spliced into the agent inbox | `data.inserted[]`, each `{ role, content }` |
-| `user/message` | A user prompt (usage only) | `time` |
-| `tool/call` | A tool invocation (usage only) | `data.name` |
-| `assistant/message` | An assistant turn | `data.usage`, `data.message.source.model` |
+| `agent/inbox/spliced` | Messages queued into the agent inbox | `data.inserted[]`, each `{ id, role, content, source.kind }` |
+| `user/message` | A user-turn echo; also carries injected context | `data.id`, `data.role`, `data.content`, `data.source.kind` |
+| `assistant/message` | An assistant turn | `data.message.content` blocks, `data.usage`, `data.message.source.model` |
+| `tool/call` | A tool invocation | `data.callId`, `data.name`, `data.arguments` |
+| `tool/result` | A tool result | `data.message` (`content`, `toolCallId` / `source.callId`, `isError`) |
+| `session/title` | Session title, fallback then LLM | `data.title` (the last event wins) |
+
+The usage extractor reads only `time` from `user/message`, `data.name` from
+`tool/call`, and `data.usage` / `data.message.source.model` from
+`assistant/message`; the transcript reads the rest.
 
 ### `data.usage` (on `assistant/message`)
 
@@ -84,10 +90,12 @@ Synthetic, for shape only (shown decompressed):
 
 ```json
 {"type":"session","version":4,"id":"session-7f3a…","cwd":"/Users/alice/code/app","createdAt":1789109916000,"time":1789109916000}
-{"type":"agent/inbox/spliced","time":1789109916500,"data":{"inserted":[{"role":"user","content":[{"type":"text","text":"Read the session format"}]}]}}
-{"type":"user/message","time":1789109916600}
-{"type":"tool/call","time":1789109917000,"data":{"name":"read"}}
-{"type":"assistant/message","time":1789109918000,"data":{"message":{"role":"assistant","content":[{"type":"text","text":"Done."}],"source":{"model":"deepseek-chat"}},"usage":{"inputTokens":1200,"outputTokens":48,"cacheReadTokens":8000}}}
+{"type":"agent/inbox/spliced","time":1789109916500,"data":{"inserted":[{"id":"u1","role":"user","content":[{"type":"text","text":"Read the session format"}]}]}}
+{"type":"user/message","time":1789109916600,"data":{"id":"u1","role":"user","content":[{"type":"text","text":"Read the session format"}]}}
+{"type":"session/title","time":1789109916650,"data":{"title":"Session format"}}
+{"type":"assistant/message","time":1789109918000,"data":{"message":{"role":"assistant","content":[{"type":"reasoning","text":"Check the docs."},{"type":"text","text":"Done."},{"type":"tool-call","id":"c1","name":"read","arguments":"{\"path\":\"README.md\"}"}],"source":{"model":"deepseek-chat"}},"usage":{"inputTokens":1200,"outputTokens":48,"cacheReadTokens":8000}}}
+{"type":"tool/call","time":1789109918100,"data":{"callId":"c1","name":"read","arguments":"{\"path\":\"README.md\"}"}}
+{"type":"tool/result","time":1789109918300,"data":{"message":{"toolCallId":"c1","isError":false,"content":[{"type":"text","text":"# README"}]}}}
 ```
 
 ## Session scanning → `SessionInfo`
@@ -107,20 +115,26 @@ simply empty (`ListDirs`/`ListFiles` return nothing on error).
    non-empty string; `createdAt = AsEpochMs(createdAt)` (a finite number passes
    through as ms; an RFC3339 string is parsed). No such line → the file is
    skipped (`nil, nil`, not an error).
-3. **User-input pass** — `dshUserInput` (`dsh.go:160`) scans *all* lines for
+3. **User-input pass** — `dshUserInput` (`dsh.go:180`) scans *all* lines for
    `agent/inbox/spliced` events carrying an `inserted` item with
    `role == "user"`. The first such item sets `sawUserInput`; the title is
    `ToTitle(ContentToText(item.content))` (`ContentToText` joins block `text`
    fields with a space). When `ToTitle` rejects the text (injected content
    such as `<turn_aborted>`), the scan continues to later spliced lines until
    a usable title appears.
-4. Field derivation:
+4. **Title pass** — `dshSessionTitle` (`dsh.go:163`) scans *all* lines for
+   `session/title` events and keeps the last non-empty `data.title`
+   (`FirstLineTitle` caps it at 120 UTF-16 units). DSH first writes a
+   fallback title (the truncated first prompt) and later replaces it with the
+   LLM-generated one, so last-wins yields the real title. When it exists it
+   overrides the user-input fallback.
+5. Field derivation:
 
 | `SessionInfo` field | Source |
 |---|---|
 | `id` | session directory name (`basename(dirname(file))`) |
 | `workspace` | header `cwd` (never the decoded project directory name) |
-| `title` | first usable user-input title, else null |
+| `title` | last `session/title` title, else first usable user-input title, else null |
 | `blank` | `true` when no user input appeared anywhere; omitted otherwise |
 | `createdAt` | header `createdAt` (`AsEpochMs`) ?? file mtime |
 | `updatedAt` | mtime of the `.zstd` file in ms (`FloorMtimeMs`) |
@@ -138,47 +152,66 @@ messaged) but can still have a null title.
 
 ## Transcript parsing → `Entry[]`
 
-`parseDshTranscript` (`transcript_dsh.go:12`) locates the file via
+`parseDshTranscript` (`transcript_dsh.go:16`) locates the file via
 `SessionInfo.FilePath` (a `#` suffix marks a SQLite store and is rejected),
 reads it whole, decompresses with the shared zstd decoder, and scans lines
 with a `bufio.Scanner` (64 KiB initial buffer, per-line cap
-`ScanMaxTranscriptLine`, 32 MiB). Per line:
+`ScanMaxTranscriptLine`, 32 MiB). Per line (`ts = mapTimestamp(obj, false)` —
+DSH lines carry a top-level millisecond `time`):
 
-- `ts = mapTimestamp(obj, false)` (`transcript.go:180`) — reads `timestamp` /
-  `time` / `createdAt` / `created_at` (numeric ms passes through; RFC3339
-  strings are parsed), recursing into `message` / `payload` / `data`. DSH
-  lines carry `time`, so this is normally the top-level millisecond value.
-- **`agent/inbox/spliced`** — for *every* item in `data.inserted` whose role
-  is recognized by `roleFromString` (`user`/`human`/`input`,
-  `assistant`/`agent`/`model`/`gemini`/`output`, `system`/`developer`), emit
-  `entriesFromContent(role, item.content, ts)`. Not just the first user
-  insert: spliced assistant content renders too, and unrecognized roles are
-  skipped.
-- **Every other line** goes to `genericEntries` (`transcript.go:455`).
+- **`agent/inbox/spliced`** — every `data.inserted` item whose role
+  `roleFromString` recognizes (`user`/`human`/`input`,
+  `assistant`/`agent`/`model`/`gemini`/`output`, `system`/`developer`) emits
+  `entriesFromContent(role, item.content, ts)`. User inserts are skipped when
+  the source kind is injected context (below) or when the message id was
+  already rendered.
+- **`user/message`** — the echo of a spliced user turn, plus injected context
+  that never passes through the inbox. Skipped when `data.source.kind` is one
+  of `agent-instructions`, `skill-catalog`, `skill-invocation`,
+  `runtime-context`, `plugin` (harness context, not conversation). Real input
+  (`user`), background-job and approval notices (`tool-jobs`,
+  `user-approval`) and model-change notices stay. Rendered once per id:
+  splices and echoes share the message id and later duplicates are dropped.
+- **`assistant/message`** — `entriesFromContent(RoleAssistant,
+  data.message.content, ts)`: text blocks, reasoning blocks (bounded
+  `Thinking`) and `tool-call` blocks (one card each, `arguments` parsed from
+  its JSON string, `id` kept for result pairing).
+- **`tool/call`** — records `data.callId` → `time` for duration and emits a
+  card only when no assistant content block carried that call. Both real
+  versions embed the block, so the emission is a guard for stores where the
+  event is the sole source.
+- **`tool/result`** — pairs onto the emitted card by call id
+  (`applyDshToolResults`): `Output` (joined text blocks, clipped), `Failed`
+  (`isError`) and `DurationMs` (`tool/call` time → result time, falling back
+  to the assistant message time). v4 keeps the id and flag on `data.message`;
+  v3 wraps each result in a `tool-result` content block with its own
+  `toolCallId` / `isError`.
+- **Everything else** falls through to `genericEntries`
+  (`transcript.go:496`), which never matches DSH's `data`-nested shapes — so
+  `session`, `step/*`, `turn/*`, `system/message`, `todo/write` and the
+  header/config events add nothing. The system prompt is deliberately not
+  rendered.
 
-### The generic fallback and its limits
+### Deduplication and injected context
 
-`genericEntries` recognizes a role from top-level `role`, `message.role` or
-`payload.role`, or from a fixed list of `type` values (`user`, `user_message`,
-`human`, `human_message`, `assistant`, `agent`, `agent_message`, `model`,
-`model_message`, `system`); content comes from `message.content`, top-level
-`content`, `payload.content`, or a string `message` / `text` field.
-
-DSH's slash-separated event names (`user/message`, `assistant/message`,
-`tool/call`) are **not** in that list, and the fallback never looks inside
-`data`. So events in the `data`-nested shape the usage extractor reads yield
-neither role nor content and produce no entries — unless the line also
-carries a top-level `role` / `message` / `content`. In practice the visible
-transcript is the inbox splices: assistant text and tool invocations are not
-rendered from `assistant/message` / `tool/call` events, and no compaction or
-system notices are synthesized.
+User text exists twice on disk (inbox splice plus `user/message` echo, same
+message id) and tool calls twice (assistant content block plus `tool/call`
+event, same call id); both are deduplicated by id, first occurrence wins.
+`user/message` also carries harness-injected context that never passed
+through the inbox — workspace instructions, skill catalogs, runtime
+snapshots and plugin context. Those source kinds are skipped;
+`<system-reminder>`-shaped text is additionally dropped by `cleanUserText`.
+Background-job and approval notices (`tool-jobs`, `user-approval`) are kept:
+they were visible through the splice path before this parsing existed.
 
 ### From content to entries
 
-Spliced content uses the shared rules (see [claude.md](claude.md)): a string
-becomes one cleaned text entry; consecutive text blocks join with `\n`; each
-tool-like block (`tool_use`, `tool_call`, `toolCall`, `function_call`) flushes
-pending text and emits an assistant-role entry with one `ToolCall`; reasoning,
+Content uses the shared rules (see [claude.md](claude.md)): a string becomes
+one cleaned text entry; consecutive text blocks join with `\n`; each tool-like
+block (`tool_use`, `tool_call`, `toolCall`, `tool-call`, `function_call`)
+flushes pending text and emits an assistant-role entry with one `ToolCall`;
+`thinking` / `reasoning` blocks become bounded `Thinking` entries (empty ones
+are skipped — DSH writes an empty reasoning block on tool-only steps);
 `tool_result` and `image` blocks are dropped. Tool cards classify by
 lowercased name (file/command/search/other) with the shared title/meta rules;
 user text goes through `cleanUserText`, assistant text is only trimmed.
@@ -217,8 +250,7 @@ its counts land on the next usage-bearing record (or the last one via
 `Flush`). No skill accounting: `skillCallsByName` is always null.
 
 Note the split feed: prompts are counted from `user/message` events, while
-the transcript shows user text from `agent/inbox/spliced` inserts — different
-event types drive the two paths.
+the transcript deduplicates splices and `user/message` echoes by message id.
 
 ### Active time & the tally
 
@@ -255,10 +287,19 @@ consecutive events counts at most `ActiveGapCapMs` (120 000 ms), and
   title null; the title search keeps scanning later splices.
 - **The id is the directory name**, so renaming the session directory changes
   the session id.
-- **Slash event types are invisible to the transcript fallback.**
-  `genericEntries` neither knows `user/message` / `assistant/message` /
-  `tool/call` nor looks inside `data`; the visible transcript comes from
-  inbox splices, and tool calls never render as cards from `tool/call` lines.
+- **User text and tool calls are stored twice.** Splice + `user/message`
+  echo share a message id; assistant content block + `tool/call` share a call
+  id. The transcript keeps the first occurrence and drops the duplicate.
+- **Injected context is filtered by source kind, not text.** `user/message`
+  and spliced inserts whose `source.kind` is `agent-instructions`,
+  `skill-catalog`, `skill-invocation`, `runtime-context` or `plugin` are
+  harness context and never render. A real user message always arrives with
+  `source.kind == "user"`.
+- **Tool durations span call → result.** A tool interrupted before its
+  `tool/result` keeps `DurationMs` 0 and an empty `Output`.
+- **Empty reasoning blocks are dropped.** DSH writes `{"type":"reasoning",
+  "text":""}` on tool-only steps; `entriesFromContent` skips empty thinking
+  and text.
 - **Usage time is numeric-only.** A line without a top-level numeric `time`
   is dropped, even if it carries an ISO timestamp elsewhere.
 - **`cacheWriteTokens` is always 0** — hard-coded, not read from the store.
@@ -273,8 +314,8 @@ consecutive events counts at most `ActiveGapCapMs` (120 000 ms), and
 |---|---|
 | Registry entry | `registry.go:30` |
 | File discovery & version pick | `dsh.go` (`ListDshSessionFiles`, `pickDshSessionFile`, `dshSessionFileRe`, `dshMinSessionVersion`) |
-| Session scan | `dsh.go` (`ScanDsh`, `ScanDshFile`, `dshUserInput`, `DecompressZstd`) |
-| Transcript loader | `transcript_dsh.go` (`parseDshTranscript`) |
+| Session scan | `dsh.go` (`ScanDsh`, `ScanDshFile`, `dshUserInput`, `dshSessionTitle`, `DecompressZstd`) |
+| Transcript loader | `transcript_dsh.go` (`parseDshTranscript`, `firstUserID`, `dshInjectedUser`, `applyDshToolResults`) |
 | Generic fallback, content → entries, tool cards | `transcript.go` (`genericEntries`, `entriesFromContent`, `toolCall`, `cleanUserText`, `roleFromString`, `mapTimestamp`) |
 | Usage extraction | `usage_dsh.go` (`scanDshUsage`, `scanDshFileUsage`) |
 | Activity tally | `tally.go` (`SessionTally`) |
