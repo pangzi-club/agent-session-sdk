@@ -295,13 +295,20 @@ func entriesFromContent(role Role, content any, ts float64) []Entry {
 			if text := AsString(block["text"]); text != nil {
 				texts = append(texts, *text)
 			}
+		case "thinking", "reasoning":
+			flush()
+			if text := firstString(block, "thinking", "reasoning", "text"); text != "" {
+				out = append(out, Entry{Role: role, Thinking: clipText(text, MaxThinkingChars), Timestamp: ts})
+			}
 		case "tool_use", "tool_call", "toolCall", "function_call":
 			flush()
 			if call, ok := toolFromBlock(block); ok {
 				out = append(out, Entry{Role: RoleAssistant, Tools: []ToolCall{call}, Timestamp: ts})
 			}
-		case "thinking", "reasoning", "redacted_thinking", "tool_result", "image":
-			// Not shown: reasoning and raw tool output are noise in this UI.
+		case "redacted_thinking", "tool_result", "image":
+			// Not entries: redacted thinking carries no text, and raw tool
+			// results are matched back onto their tool calls by callers
+			// that know the pairing (see applyToolResults).
 		}
 	}
 	flush()
@@ -326,7 +333,41 @@ func toolFromBlock(block map[string]any) (ToolCall, bool) {
 			_ = json.Unmarshal([]byte(*raw), &input)
 		}
 	}
-	return toolCall(name, input), true
+	call := toolCall(name, input)
+	if id := firstString(block, "id", "tool_use_id"); id != "" {
+		call.ID = id
+	}
+	if input != nil {
+		call.Input = clipText(compactJSON(input), MaxToolInputChars)
+	}
+	return call, true
+}
+
+// Bounds for the optional raw payloads kept on entries and tool calls, in
+// runes: one giant result must not bloat the transcript cache.
+const (
+	MaxThinkingChars   = 2048
+	MaxToolInputChars  = 2048
+	MaxToolOutputChars = 4096
+)
+
+// clipText bounds a raw payload while keeping its line breaks, marking the cut.
+func clipText(s string, limit int) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	r := []rune(s)
+	if len(r) <= limit {
+		return s
+	}
+	return string(r[:limit]) + "…"
+}
+
+// compactJSON serializes a value as single-line JSON, or "" when it cannot.
+func compactJSON(v any) string {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
 }
 
 var fileTools = map[string]bool{

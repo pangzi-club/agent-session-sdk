@@ -10,6 +10,7 @@ package agentsession
 // (see also the qoder-cn entry).
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,11 +19,19 @@ import (
 
 // ScanQoder mirrors scanQoder.
 func ScanQoder(agentDir string) ([]SessionInfo, error) {
+	// The desktop app's catalog holds the sidebar titles; open it once for the
+	// whole scan (a per-file open would cost one sqlite handle per session).
+	titleDBs := qoderTitleDBs()
+	defer func() {
+		for _, db := range titleDBs {
+			db.Close()
+		}
+	}()
 	out := make([]SessionInfo, 0)
 	for _, projectDir := range ListDirs(filepath.Join(agentDir, "projects")) {
 		files := ListFiles(projectDir, ".jsonl", false)
 		results, err := MapLimit(files, FileConcurrency, func(file string) (*SessionInfo, error) {
-			return scanQoderFile(file, projectDir)
+			return scanQoderFile(file, projectDir, titleDBs)
 		})
 		if err != nil {
 			return nil, err
@@ -36,7 +45,7 @@ func ScanQoder(agentDir string) ([]SessionInfo, error) {
 	return out, nil
 }
 
-func scanQoderFile(file, projectDir string) (*SessionInfo, error) {
+func scanQoderFile(file, projectDir string, titleDBs []*sql.DB) (*SessionInfo, error) {
 	// The file may have been deleted after the directory was enumerated: skip it rather than
 	// failing the whole agent scan
 	info, err := os.Stat(file)
@@ -78,16 +87,22 @@ func scanQoderFile(file, projectDir string) (*SessionInfo, error) {
 		return nil, nil
 	}
 
-	title := ScanLines(file, func(obj map[string]any) *string {
-		if !IsStr(obj["type"], "user") {
-			return nil
-		}
-		return ToTitle(QoderUserPromptText(GetMap(obj["message"])))
-	}, ScanMaxBytes)
+	sessionID := strings.TrimSuffix(filepath.Base(file), ".jsonl")
+	// Prefer the title the Qoder app itself shows (its desktop catalog records
+	// one per session); fall back to the first user prompt.
+	title := qoderAppTitle(titleDBs, sessionID)
+	if title == nil {
+		title = ScanLines(file, func(obj map[string]any) *string {
+			if !IsStr(obj["type"], "user") {
+				return nil
+			}
+			return ToTitle(QoderUserPromptText(GetMap(obj["message"])))
+		}, ScanMaxBytes)
+	}
 
 	filePath := file
 	return &SessionInfo{
-		ID:        strings.TrimSuffix(filepath.Base(file), ".jsonl"),
+		ID:        sessionID,
 		Workspace: *workspace,
 		Title:     title,
 		CreatedAt: *meta.createdAt,
@@ -95,6 +110,48 @@ func scanQoderFile(file, projectDir string) (*SessionInfo, error) {
 		SizeBytes: float64(info.Size()),
 		FilePath:  &filePath,
 	}, nil
+}
+
+// qoderTitleDBs opens the Qoder desktop app's session catalogs. The app keeps
+// the sidebar titles in its own sqlite store; the CLI's .jsonl files record
+// none, so the scan falls back to the first user prompt. Both editions are
+// probed, and a missing or locked catalog is not an error.
+func qoderTitleDBs() []*sql.DB {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	var dbs []*sql.DB
+	for _, rel := range []string{
+		"Library/Application Support/com.qodercn.app.stable/main.sqlite",
+		"Library/Application Support/com.qoder.app.stable/main.sqlite",
+		"Library/Application Support/Qoder/main.sqlite",
+	} {
+		path := filepath.Join(home, rel)
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		if db, err := OpenSQLite(path); err == nil {
+			dbs = append(dbs, db)
+		}
+	}
+	return dbs
+}
+
+// qoderAppTitle returns the title the Qoder app shows for the session, or nil
+// when none of the catalogs lists it.
+func qoderAppTitle(dbs []*sql.DB, sessionID string) *string {
+	for _, db := range dbs {
+		rows, err := QueryMaps(db,
+			`SELECT title FROM chat_sessions WHERE session_id = ? AND title != '' LIMIT 1`, sessionID)
+		if err != nil || len(rows) == 0 {
+			continue
+		}
+		if title := firstString(rows[0], "title"); title != "" {
+			return &title
+		}
+	}
+	return nil
 }
 
 // qoderRecordWorkspace mirrors recordWorkspace: the first directory on the workspace-directories

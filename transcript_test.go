@@ -20,8 +20,8 @@ func TestParseClaudeTranscript(t *testing.T) {
 	file := filepath.Join(dir, "s1.jsonl")
 	writeFile(t, file, strings.Join([]string{
 		`{"type":"user","timestamp":"2026-11-06T02:00:00.000Z","message":{"role":"user","content":[{"type":"text","text":"<system-reminder>noise</system-reminder>\n\nFix it"}]}}`,
-		`{"type":"assistant","timestamp":"2026-11-06T02:00:01.000Z","message":{"role":"assistant","content":[{"type":"text","text":"On it."},{"type":"tool_use","name":"Read","input":{"file_path":"/tmp/a.go"}},{"type":"text","text":"Done."}]}}`,
-		`{"type":"user","timestamp":"2026-11-06T02:00:02.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}`,
+		`{"type":"assistant","timestamp":"2026-11-06T02:00:01.000Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Plan first."},{"type":"text","text":"On it."},{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/tmp/a.go"}},{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"go test"}},{"type":"text","text":"Done."}]}}`,
+		`{"type":"user","timestamp":"2026-11-06T02:00:02.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"},{"type":"tool_result","tool_use_id":"t2","is_error":true,"content":[{"type":"text","text":"boom"}]}]}}`,
 		`{"type":"system","subtype":"compact_boundary","timestamp":"2026-11-06T02:00:03.000Z"}`,
 	}, "\n"))
 
@@ -29,20 +29,82 @@ func TestParseClaudeTranscript(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 5 {
-		t.Fatalf("%d entries, want 5: %+v", len(entries), entries)
+	if len(entries) != 7 {
+		t.Fatalf("%d entries, want 7: %+v", len(entries), entries)
 	}
 	if entries[0].Role != RoleUser || entries[0].Text != "Fix it" {
 		t.Errorf("first entry %+v, want the cleaned user prompt", entries[0])
 	}
-	if entries[1].Role != RoleAssistant || entries[1].Text != "On it." {
-		t.Errorf("second entry %+v, want assistant text", entries[1])
+	if entries[1].Role != RoleAssistant || entries[1].Thinking != "Plan first." {
+		t.Errorf("second entry %+v, want the thinking block", entries[1])
 	}
-	if len(entries[2].Tools) != 1 || entries[2].Tools[0].Name != "Read" || entries[2].Tools[0].Title != "/tmp/a.go" {
-		t.Errorf("third entry %+v, want the Read tool card", entries[2])
+	if entries[2].Role != RoleAssistant || entries[2].Text != "On it." {
+		t.Errorf("third entry %+v, want assistant text", entries[2])
 	}
-	if entries[4].Role != RoleSystem || entries[4].Text != "上下文已压缩" {
-		t.Errorf("last entry %+v, want the compact notice", entries[4])
+	read := entries[3].Tools[0]
+	if len(entries[3].Tools) != 1 || read.Name != "Read" || read.Title != "/tmp/a.go" ||
+		read.ID != "t1" || read.Output != "ok" || read.Failed {
+		t.Errorf("read call %+v, want the result matched by id", read)
+	}
+	if !strings.Contains(read.Input, "/tmp/a.go") {
+		t.Errorf("read input %q, want the raw arguments", read.Input)
+	}
+	bash := entries[4].Tools[0]
+	if bash.Name != "Bash" || bash.ID != "t2" || !bash.Failed || bash.Output != "boom" {
+		t.Errorf("bash call %+v, want the failed result matched", bash)
+	}
+	if entries[5].Role != RoleAssistant || entries[5].Text != "Done." {
+		t.Errorf("sixth entry %+v, want the trailing assistant text", entries[5])
+	}
+	if entries[6].Role != RoleSystem || entries[6].Text != "上下文已压缩" {
+		t.Errorf("last entry %+v, want the compact notice", entries[6])
+	}
+}
+
+func TestQoderAppTitle(t *testing.T) {
+	dir := t.TempDir()
+	dbFile := filepath.Join(dir, "main.sqlite")
+	db, err := sql.Open("sqlite", dbFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		`CREATE TABLE chat_sessions (session_id TEXT PRIMARY KEY, title TEXT NOT NULL)`,
+		`INSERT INTO chat_sessions (session_id, title) VALUES ('s1', 'App 标题'), ('s2', '')`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+	ro, err := OpenSQLite(dbFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ro.Close()
+	dbs := []*sql.DB{ro}
+
+	if title := qoderAppTitle(dbs, "s1"); title == nil || *title != "App 标题" {
+		t.Fatalf("title %v, want the catalog title", title)
+	}
+	for _, id := range []string{"s2", "missing"} {
+		if title := qoderAppTitle(dbs, id); title != nil {
+			t.Fatalf("title %v for %q, want nil", title, id)
+		}
+	}
+
+	// scanQoderFile prefers the catalog title over the first user prompt.
+	src := filepath.Join(dir, "s1.jsonl")
+	writeFile(t, src, strings.Join([]string{
+		`{"directories":["/tmp/w"],"timestamp":"2026-11-06T02:00:00.000Z"}`,
+		`{"type":"user","timestamp":"2026-11-06T02:00:00.000Z","cwd":"/tmp/w","message":{"role":"user","content":[{"type":"text","text":"First prompt"}]}}`,
+	}, "\n"))
+	session, err := scanQoderFile(src, dir, dbs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session == nil || session.Title == nil || *session.Title != "App 标题" {
+		t.Fatalf("session %+v, want the catalog title", session)
 	}
 }
 

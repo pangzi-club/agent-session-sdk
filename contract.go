@@ -112,20 +112,29 @@ const (
 
 // ToolCall is one tool invocation. Title is the single line shown on the card
 // (a path, a command, a query); Meta is the tool name plus an optional hint.
+// ID links the call to its tool_result record where the store provides one;
+// Input and Output carry the bounded raw arguments and result for consumers
+// that show them; Failed marks a result that reported an error.
 type ToolCall struct {
-	Name  string   `json:"name"`
-	Title string   `json:"title"`
-	Meta  string   `json:"meta"`
-	Kind  ToolKind `json:"kind"`
+	Name   string   `json:"name"`
+	Title  string   `json:"title"`
+	Meta   string   `json:"meta"`
+	Kind   ToolKind `json:"kind"`
+	ID     string   `json:"id,omitempty"`
+	Input  string   `json:"input,omitempty"`
+	Output string   `json:"output,omitempty"`
+	Failed bool     `json:"failed,omitempty"`
 }
 
-// Entry is one visible item of a transcript: either text or tool calls, never
-// both. Reasoning blocks and raw tool output are not entries. Text and tools
-// parsed from the same assistant record share a timestamp (epoch ms, 0 when the
-// store records none).
+// Entry is one visible item of a transcript: either text, thinking or tool
+// calls, never more than one. Thinking is the bounded reasoning text of an
+// assistant record; consumers that treat reasoning as noise can ignore it.
+// Text and tools parsed from the same assistant record share a timestamp
+// (epoch ms, 0 when the store records none).
 type Entry struct {
 	Role      Role       `json:"role"`
 	Text      string     `json:"text"`
+	Thinking  string     `json:"thinking,omitempty"`
 	Tools     []ToolCall `json:"tools,omitempty"`
 	Timestamp float64    `json:"timestamp"`
 }
