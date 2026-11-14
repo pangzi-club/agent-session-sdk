@@ -6,6 +6,7 @@ package agentsession
 
 import (
 	"encoding/json"
+	"errors"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -13,8 +14,12 @@ import (
 
 // ScanGrok aligns with scanGrok.
 func ScanGrok(agentDir string) ([]SessionInfo, error) {
+	dirs, err := listGrokSessionDirsE(agentDir)
+	if err != nil {
+		return nil, err
+	}
 	results, err := MapLimit(
-		ListGrokSessionDirs(agentDir),
+		dirs,
 		FileConcurrency,
 		ScanGrokSessionDir,
 	)
@@ -34,19 +39,38 @@ func ScanGrok(agentDir string) ([]SessionInfo, error) {
 // sessions/<URL-encoded cwd>/<uuid> session dirs. The usage scan reuses it so the
 // layout rules live in only one place.
 func ListGrokSessionDirs(agentDir string) []string {
-	var sessionDirs []string
-	for _, projectDir := range ListDirs(filepath.Join(agentDir, "sessions")) {
-		sessionDirs = append(sessionDirs, ListDirs(projectDir)...)
+	dirs, _ := listGrokSessionDirsE(agentDir)
+	return dirs
+}
+
+func listGrokSessionDirsE(agentDir string) ([]string, error) {
+	projectDirs, err := ListDirsE(filepath.Join(agentDir, "sessions"))
+	if errors.Is(err, os.ErrNotExist) {
+		return []string{}, nil
 	}
-	return sessionDirs
+	if err != nil {
+		return nil, err
+	}
+	var sessionDirs []string
+	for _, projectDir := range projectDirs {
+		dirs, err := ListDirsE(projectDir)
+		if err != nil {
+			return nil, err
+		}
+		sessionDirs = append(sessionDirs, dirs...)
+	}
+	return sessionDirs, nil
 }
 
 // ScanGrokSessionDir aligns with scanGrokSessionDir: a dir without summary.json is not a session dir, so return nil.
 func ScanGrokSessionDir(dir string) (*SessionInfo, error) {
 	raw, err := os.ReadFile(filepath.Join(dir, "summary.json"))
-	if err != nil {
+	if errors.Is(err, os.ErrNotExist) {
 		// No summary.json: not a session dir, skip it
 		return nil, nil
+	}
+	if err != nil {
+		return nil, err
 	}
 	var parsed any
 	if json.Unmarshal(raw, &parsed) != nil {

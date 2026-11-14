@@ -13,6 +13,8 @@ package agentsession
 // opencode); query/missing-table failures also yield an empty result.
 
 import (
+	"errors"
+	"os"
 	"path/filepath"
 	"sort"
 )
@@ -37,6 +39,9 @@ func scanZcodeUsage(agentDir string) (*usageModuleResult, error) {
 	dbPath := filepath.Join(agentDir, "cli/db/db.sqlite")
 	db, err := OpenSQLite(dbPath)
 	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
 		// zcode not installed: treat as no data (same as opencode), do not
 		// demote the global status to 2
 		return &usageModuleResult{
@@ -51,7 +56,7 @@ func scanZcodeUsage(agentDir string) (*usageModuleResult, error) {
 	sessionRows, err := QueryMaps(db,
 		"SELECT id, directory, title, time_created, time_updated FROM session WHERE task_type IS NULL OR task_type = 'interactive'")
 	if err != nil {
-		return &usageModuleResult{sessions: []SessionInfo{}, records: []UsageRecord{}}, nil
+		return nil, err
 	}
 	sessions := []SessionInfo{}
 	sessionIDs := map[string]bool{}

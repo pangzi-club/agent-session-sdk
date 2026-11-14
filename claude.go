@@ -6,6 +6,7 @@ package agentsession
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,7 +21,13 @@ func ScanClaude(agentDir string) ([]SessionInfo, error) {
 }
 
 func scanClaudeProjectsDir(projectsDir string) ([]SessionInfo, error) {
-	projectDirs := ListDirs(projectsDir)
+	projectDirs, err := ListDirsE(projectsDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return []SessionInfo{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
 	out := make([]SessionInfo, 0)
 	group := new(errgroup.Group)
 	var mu sync.Mutex
@@ -121,7 +128,10 @@ func scanClaudeProjectDir(projectDir string) ([]SessionInfo, error) {
 		}
 	}
 	// Fallback: stream-scan every JSONL in the project directory (stop at the first hit, never read the whole file)
-	files := ListFiles(projectDir, ".jsonl", false)
+	files, err := ListFilesE(projectDir, ".jsonl", false)
+	if err != nil {
+		return nil, err
+	}
 	results, err := MapLimit(files, FileConcurrency, scanClaudeFile)
 	if err != nil {
 		return nil, err
@@ -139,8 +149,11 @@ func scanClaudeFile(file string) (*SessionInfo, error) {
 	// The file may vanish after the directory listing: skip it instead of
 	// letting one disappearing file take down the whole agent.
 	info, err := os.Stat(file)
-	if err != nil {
+	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
+	}
+	if err != nil {
+		return nil, err
 	}
 	type claudeMeta struct {
 		cwd       string
@@ -148,7 +161,7 @@ func scanClaudeFile(file string) (*SessionInfo, error) {
 	}
 	// Metadata: the first user line carrying a cwd (streamed scan, tolerant of a
 	// very long pasted first line).
-	meta := ScanLines(file, func(obj map[string]any) *claudeMeta {
+	meta, err := ScanLinesE(file, func(obj map[string]any) *claudeMeta {
 		if !IsStr(obj["type"], "user") {
 			return nil
 		}
@@ -158,12 +171,15 @@ func scanClaudeFile(file string) (*SessionInfo, error) {
 		}
 		return &claudeMeta{cwd: *cwd, createdAt: AsEpochMs(obj["timestamp"])}
 	}, ScanMaxBytes)
+	if err != nil {
+		return nil, err
+	}
 	if meta == nil {
 		return nil, nil
 	}
 	// The title needs its own pass: in slash-command sessions the first user
 	// line is an injected echo, so keep looking for the first real prompt.
-	title := ScanLines(file, func(obj map[string]any) *string {
+	title, err := ScanLinesE(file, func(obj map[string]any) *string {
 		if !IsStr(obj["type"], "user") {
 			return nil
 		}
@@ -174,6 +190,9 @@ func scanClaudeFile(file string) (*SessionInfo, error) {
 		}
 		return ToTitle(ContentToText(content))
 	}, ScanMaxBytes)
+	if err != nil {
+		return nil, err
+	}
 
 	mtimeMs := FloorMtimeMs(info)
 	createdAt := mtimeMs

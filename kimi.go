@@ -7,6 +7,7 @@ package agentsession
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 )
@@ -14,13 +15,22 @@ import (
 // ScanKimi mirrors scanKimi.
 func ScanKimi(agentDir string) ([]SessionInfo, error) {
 	workspaces := loadKimiWorkspaces(filepath.Join(agentDir, "kimi.json"))
-	projectDirs := ListDirs(filepath.Join(agentDir, "sessions"))
+	projectDirs, err := ListDirsE(filepath.Join(agentDir, "sessions"))
+	if errors.Is(err, os.ErrNotExist) {
+		return []SessionInfo{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
 	results, err := MapLimit(projectDirs, FileConcurrency, func(projectDir string) ([]SessionInfo, error) {
 		workspace, ok := workspaces[filepath.Base(projectDir)]
 		if !ok {
 			return nil, nil
 		}
-		sessionDirs := ListDirs(projectDir)
+		sessionDirs, err := ListDirsE(projectDir)
+		if err != nil {
+			return nil, err
+		}
 		sessions, err := MapLimit(sessionDirs, FileConcurrency, func(dir string) (*SessionInfo, error) {
 			return scanKimiSession(dir, workspace)
 		})

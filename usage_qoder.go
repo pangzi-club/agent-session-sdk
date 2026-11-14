@@ -62,28 +62,43 @@ func scanQoderUsageAs(agentDir, agentID string) (*usageModuleResult, error) {
 		return nil, err
 	}
 	var records []UsageRecord
-	for _, projectDir := range ListDirs(filepath.Join(agentDir, "projects")) {
-		records = append(records, scanQoderProjectUsage(projectDir, agentID)...)
+	projectDirs, err := qoderProjectDirs(agentDir)
+	if err != nil {
+		return nil, err
+	}
+	for _, projectDir := range projectDirs {
+		projectRecords, err := scanQoderProjectUsage(projectDir, agentID)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, projectRecords...)
 	}
 	return &usageModuleResult{sessions: sessions, records: records}, nil
 }
 
-func scanQoderProjectUsage(projectDir, agentID string) []UsageRecord {
+func scanQoderProjectUsage(projectDir, agentID string) ([]UsageRecord, error) {
 	entries, err := os.ReadDir(projectDir)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	var out []UsageRecord
 	for _, entry := range entries {
 		if entry.Type().IsRegular() && strings.HasSuffix(entry.Name(), ".jsonl") {
-			out = append(out, scanQoderFileUsage(filepath.Join(projectDir, entry.Name()), agentID)...)
+			records, err := scanQoderFileUsage(filepath.Join(projectDir, entry.Name()), agentID)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, records...)
 		}
 	}
-	return out
+	return out, nil
 }
 
-func scanQoderFileUsage(file, agentID string) []UsageRecord {
-	lines := ReadAllLines(file)
+func scanQoderFileUsage(file, agentID string) ([]UsageRecord, error) {
+	lines, err := ReadAllLinesE(file)
+	if err != nil {
+		return nil, err
+	}
 	tally := &SessionTally{}
 	records := []UsageRecord{}
 	contextWindow := float64(qoderDefaultContextWindow)
@@ -206,7 +221,7 @@ func scanQoderFileUsage(file, agentID string) []UsageRecord {
 	if len(records) > 0 {
 		records[len(records)-1].MergeInterval(tally.Flush())
 	}
-	return records
+	return records, nil
 }
 
 // qoderRequestCredits mirrors requestCredits: free requests

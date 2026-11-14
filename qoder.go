@@ -11,6 +11,7 @@ package agentsession
 
 import (
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,8 +29,15 @@ func ScanQoder(agentDir string) ([]SessionInfo, error) {
 		}
 	}()
 	out := make([]SessionInfo, 0)
-	for _, projectDir := range ListDirs(filepath.Join(agentDir, "projects")) {
-		files := ListFiles(projectDir, ".jsonl", false)
+	projectDirs, err := qoderProjectDirs(agentDir)
+	if err != nil {
+		return nil, err
+	}
+	for _, projectDir := range projectDirs {
+		files, err := ListFilesE(projectDir, ".jsonl", false)
+		if err != nil {
+			return nil, err
+		}
 		results, err := MapLimit(files, FileConcurrency, func(file string) (*SessionInfo, error) {
 			return scanQoderFile(file, projectDir, titleDBs)
 		})
@@ -45,12 +53,23 @@ func ScanQoder(agentDir string) ([]SessionInfo, error) {
 	return out, nil
 }
 
+func qoderProjectDirs(agentDir string) ([]string, error) {
+	dirs, err := ListDirsE(filepath.Join(agentDir, "projects"))
+	if errors.Is(err, os.ErrNotExist) {
+		return []string{}, nil
+	}
+	return dirs, err
+}
+
 func scanQoderFile(file, projectDir string, titleDBs []*sql.DB) (*SessionInfo, error) {
 	// The file may have been deleted after the directory was enumerated: skip it rather than
 	// failing the whole agent scan
 	info, err := os.Stat(file)
-	if err != nil {
+	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
+	}
+	if err != nil {
+		return nil, err
 	}
 
 	// Gather metadata in a single pass (stop once both are found): the workspace-directories line
@@ -61,7 +80,7 @@ func scanQoderFile(file, projectDir string, titleDBs []*sql.DB) (*SessionInfo, e
 		createdAt *float64
 	}
 	meta := &qoderMeta{}
-	ScanLines(file, func(obj map[string]any) *qoderMeta {
+	_, err = ScanLinesE(file, func(obj map[string]any) *qoderMeta {
 		if meta.createdAt == nil {
 			meta.createdAt = AsEpochMs(obj["timestamp"])
 		}
@@ -73,7 +92,10 @@ func scanQoderFile(file, projectDir string, titleDBs []*sql.DB) (*SessionInfo, e
 		}
 		return nil
 	}, ScanMaxBytes)
-	// Not one parsable record (empty file / no read permission): do not treat it as a session
+	if err != nil {
+		return nil, err
+	}
+	// Not one parsable record: do not treat it as a session.
 	if meta.createdAt == nil {
 		return nil, nil
 	}
@@ -92,12 +114,15 @@ func scanQoderFile(file, projectDir string, titleDBs []*sql.DB) (*SessionInfo, e
 	// one per session); fall back to the first user prompt.
 	title := qoderAppTitle(titleDBs, sessionID)
 	if title == nil {
-		title = ScanLines(file, func(obj map[string]any) *string {
+		title, err = ScanLinesE(file, func(obj map[string]any) *string {
 			if !IsStr(obj["type"], "user") {
 				return nil
 			}
 			return ToTitle(QoderUserPromptText(GetMap(obj["message"])))
 		}, ScanMaxBytes)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	filePath := file

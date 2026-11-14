@@ -5,6 +5,8 @@
 package agentsession
 
 import (
+	"errors"
+	"os"
 	"path/filepath"
 	"sync"
 )
@@ -35,15 +37,27 @@ var usageModules = func() []agentDef {
 // and sessions merge into the ordered map keyed by bare sessionId with
 // last-write-wins. Status is per agent: every emitted session comes from a
 // successfully scanned module, so it is always 3.
-func ScanAllUsage(home string) UsageScan {
+// UsageScanReport includes per-agent failures alongside successfully read data.
+type UsageScanReport struct {
+	Scan     UsageScan
+	Failures []AgentScanFailure
+}
+
+// ScanAllUsageDetailed retains successful modules and reports broken stores.
+func ScanAllUsageDetailed(home string) UsageScanReport {
 	results := make([]*usageModuleResult, len(usageModules))
+	failures := make([][]AgentScanFailure, len(usageModules))
 	var wg sync.WaitGroup
 	for i := range usageModules {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
 			module := usageModules[i]
-			if result, err := module.usageScan(filepath.Join(home, module.directory)); err == nil {
+			directory := filepath.Join(home, module.directory)
+			result, err := module.usageScan(directory)
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				failures[i] = append(failures[i], AgentScanFailure{AgentID: module.id, AgentName: module.name, Directory: directory, Err: err})
+			} else {
 				results[i] = result
 			}
 		}(i)
@@ -93,7 +107,13 @@ func ScanAllUsage(home string) UsageScan {
 			sessions.Set(session.ID, usage)
 		}
 	}
-	return UsageScan{Records: records, Sessions: sessions.Values()}
+	return UsageScanReport{Scan: UsageScan{Records: records, Sessions: sessions.Values()}, Failures: joinAgentFailures(failures)}
+}
+
+// ScanAllUsage preserves the original empty-on-error convenience API. Use
+// ScanAllUsageDetailed for diagnostics and non-empty-on-failure CLI behavior.
+func ScanAllUsage(home string) UsageScan {
+	return ScanAllUsageDetailed(home).Scan
 }
 
 // ApplyInterval expands the TS spread `...tally.takeUntil(ts)` onto the record

@@ -81,6 +81,32 @@ func TestSessionIndexIncrementalSearchAndGet(t *testing.T) {
 	}
 }
 
+func TestSessionIndexRefreshReportsFailureAndRetainsRows(t *testing.T) {
+	home := t.TempDir()
+	writeClaudeIndexFixture(t, home, "sess-1", "Keep me", "2026-11-06T02:25:32.506Z")
+	index, err := OpenSessionIndex(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer index.Close()
+	if _, err := index.Refresh("claude"); err != nil {
+		t.Fatal(err)
+	}
+
+	replaceClaudeProjectsWithFile(t, home)
+	stats, err := index.Refresh("claude")
+	if err == nil || !strings.Contains(err.Error(), "claude") {
+		t.Fatalf("refresh error = %v, want a Claude scan failure", err)
+	}
+	if stats.Failures != 1 || stats.Scanned != 0 {
+		t.Fatalf("refresh stats = %+v, want exactly one failure", stats)
+	}
+	session, getErr := index.Get("claude", "sess-1")
+	if getErr != nil || session.Title == nil || *session.Title != "Keep me" {
+		t.Fatalf("previous indexed session = %+v, %v", session, getErr)
+	}
+}
+
 func TestSessionIndexScannerVersionRebuilds(t *testing.T) {
 	home := t.TempDir()
 	writeClaudeIndexFixture(t, home, "sess-1", "Indexed title", "2026-11-06T02:25:32.506Z")

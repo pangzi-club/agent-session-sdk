@@ -5,6 +5,7 @@ package agentsession
 // tool_use blocks in content = tool calls; isSidechain subagent lines are skipped entirely.
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,30 +17,41 @@ func scanClaudeUsage(agentDir string) (*usageModuleResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	projectDirs, err := ListDirsE(filepath.Join(agentDir, "projects"))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
 	var records []UsageRecord
-	for _, projectDir := range ListDirs(filepath.Join(agentDir, "projects")) {
-		records = append(records, scanClaudeProjectUsage(projectDir)...)
+	for _, projectDir := range projectDirs {
+		projectRecords, err := scanClaudeProjectUsage(projectDir)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, projectRecords...)
 	}
 	return &usageModuleResult{sessions: sessions, records: records}, nil
 }
 
-func scanClaudeProjectUsage(projectDir string) []UsageRecord {
+func scanClaudeProjectUsage(projectDir string) ([]UsageRecord, error) {
 	entries, err := os.ReadDir(projectDir)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	var out []UsageRecord
 	for _, entry := range entries {
 		if entry.Type().IsRegular() && strings.HasSuffix(entry.Name(), ".jsonl") {
-			out = append(out, scanClaudeFileUsage(filepath.Join(projectDir, entry.Name()))...)
+			records, err := scanClaudeFileUsage(filepath.Join(projectDir, entry.Name()))
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, records...)
 		}
 	}
-	return out
+	return out, nil
 }
 
-func scanClaudeFileUsage(file string) []UsageRecord {
-	records, _ := scanClaudeUsageRecords(file, "", "claude")
-	return records
+func scanClaudeFileUsage(file string) ([]UsageRecord, error) {
+	return scanClaudeUsageRecords(file, "", "claude")
 }
 
 // scanClaudeSessionUsage lets embedded Claude stores replace the native session
@@ -49,7 +61,10 @@ func scanClaudeSessionUsage(session SessionInfo, agentID string) ([]UsageRecord,
 }
 
 func scanClaudeUsageRecords(file, sessionID, agentID string) ([]UsageRecord, error) {
-	lines := ReadAllLines(file)
+	lines, err := ReadAllLinesE(file)
+	if err != nil {
+		return nil, err
+	}
 	tally := &SessionTally{}
 	records := []UsageRecord{}
 	WalkLines(lines, func(obj map[string]any) {

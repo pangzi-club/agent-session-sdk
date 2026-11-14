@@ -8,6 +8,8 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -367,11 +369,11 @@ func FloorMtimeMs(info os.FileInfo) float64 {
 	return float64(info.ModTime().UnixNano() / int64(time.Millisecond))
 }
 
-// ListDirs mirrors listDirs: list subdirectories, skip dot-prefixed ones, return empty on error.
-func ListDirs(dir string) []string {
+// ListDirsE lists visible subdirectories and preserves filesystem errors.
+func ListDirsE(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	var out []string
 	for _, entry := range entries {
@@ -379,15 +381,21 @@ func ListDirs(dir string) []string {
 			out = append(out, filepath.Join(dir, entry.Name()))
 		}
 	}
+	return out, nil
+}
+
+// ListDirs mirrors listDirs: list subdirectories, skip dot-prefixed ones, return empty on error.
+func ListDirs(dir string) []string {
+	out, _ := ListDirsE(dir)
 	return out
 }
 
-// ListFiles mirrors listFiles: list files with the given extension (dot-prefixed files are skipped);
-// recursive descends into every subdirectory (including dot directories).
-func ListFiles(dir, ext string, recursive bool) []string {
+// ListFilesE lists files with the given extension and preserves filesystem
+// errors, including failures in recursively visited subdirectories.
+func ListFilesE(dir, ext string, recursive bool) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	var files []string
 	var subDirs []string
@@ -399,11 +407,22 @@ func ListFiles(dir, ext string, recursive bool) []string {
 		}
 	}
 	if !recursive {
-		return files
+		return files, nil
 	}
 	for _, sub := range subDirs {
-		files = append(files, ListFiles(sub, ext, true)...)
+		nested, err := ListFilesE(sub, ext, true)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, nested...)
 	}
+	return files, nil
+}
+
+// ListFiles mirrors listFiles: list files with the given extension (dot-prefixed files are skipped);
+// recursive descends into every subdirectory (including dot directories).
+func ListFiles(dir, ext string, recursive bool) []string {
+	files, _ := ListFilesE(dir, ext, recursive)
 	return files
 }
 
@@ -480,12 +499,12 @@ func WalkLines(lines []string, visit func(map[string]any)) {
 	}
 }
 
-// ScanLines mirrors scanLines: stream line by line, stop on the first match, skip bad lines, stop past maxBytes.
-// Same as TS: open/read failures always return nil (treated as no session, never dragging down the agent or erroring).
-func ScanLines[T any](file string, pick func(map[string]any) *T, maxBytes int) *T {
+// ScanLinesE streams line by line, stops on the first match, skips malformed
+// JSON and reports filesystem/read failures. Scanning stops at maxBytes.
+func ScanLinesE[T any](file string, pick func(map[string]any) *T, maxBytes int) (*T, error) {
 	f, err := os.Open(file)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer f.Close()
 	reader := bufio.NewReaderSize(f, 128*1024)
@@ -496,35 +515,49 @@ func ScanLines[T any](file string, pick func(map[string]any) *T, maxBytes int) *
 		content = strings.TrimSuffix(content, "\r")
 		bytes += len(content) + 1
 		if bytes > maxBytes {
-			break
+			return nil, nil
 		}
 		if strings.TrimSpace(content) != "" {
 			var v any
 			if json.Unmarshal([]byte(content), &v) == nil {
 				if m := GetMap(v); m != nil {
 					if result := pick(m); result != nil {
-						return result
+						return result, nil
 					}
 				}
 			}
 		}
 		if readErr != nil {
-			// EOF (last line already handled) or an interrupted read: both match TS, treated as no session
-			return nil
+			if errors.Is(readErr, io.EOF) {
+				return nil, nil
+			}
+			return nil, readErr
 		}
 	}
-	// Stopped at the byte limit: same break semantics as TS, report no match
-	return nil
 }
 
-// ReadAllLines reads the whole file and splits it into lines; like the TS usage extractors, failures
-// return empty (no error is raised).
-func ReadAllLines(file string) []string {
+// ScanLines preserves the best-effort metadata helper. New scanners should use
+// ScanLinesE when read failures must not look like an absent session.
+func ScanLines[T any](file string, pick func(map[string]any) *T, maxBytes int) *T {
+	result, _ := ScanLinesE(file, pick, maxBytes)
+	return result
+}
+
+// ReadAllLinesE reads and splits a JSONL file, preserving filesystem errors.
+// ReadAllLines remains for legacy best-effort metadata scans.
+func ReadAllLinesE(file string) ([]string, error) {
 	data, err := os.ReadFile(file)
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	return strings.Split(string(data), "\n")
+	return strings.Split(string(data), "\n"), nil
+}
+
+// ReadAllLines reads the whole file and splits it into lines; failures return
+// empty for optional metadata paths. Usage accounting uses ReadAllLinesE.
+func ReadAllLines(file string) []string {
+	lines, _ := ReadAllLinesE(file)
+	return lines
 }
 
 // ---- SQLite (read-only, equivalent to node:sqlite DatabaseSync readOnly) ----
@@ -532,6 +565,12 @@ func ReadAllLines(file string) []string {
 // OpenSQLite opens the database read-only (busy_timeout 1000ms matches the TS timeout). A missing or
 // unopenable file returns an error, matching node:sqlite readOnly behavior (the file is not created).
 func OpenSQLite(dbPath string) (*sql.DB, error) {
+	// The SQLite driver reports a missing read-only database as a generic
+	// unable-to-open error. Stat first so callers can distinguish a normal
+	// absent agent store from a corrupt or inaccessible one with errors.Is.
+	if _, err := os.Stat(dbPath); err != nil {
+		return nil, err
+	}
 	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro&_pragma=busy_timeout(1000)")
 	if err != nil {
 		return nil, err

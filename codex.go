@@ -5,6 +5,7 @@ package agentsession
 // (session_meta metadata + title from the first real user message).
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,13 +13,9 @@ import (
 
 // ScanCodex aligns with scanCodex.
 func ScanCodex(agentDir string) ([]SessionInfo, error) {
-	var files []string
-	for _, year := range ListDirs(filepath.Join(agentDir, "sessions")) {
-		for _, month := range ListDirs(year) {
-			for _, day := range ListDirs(month) {
-				files = append(files, ListFiles(day, ".jsonl", false)...)
-			}
-		}
+	files, err := codexSessionFiles(agentDir)
+	if err != nil {
+		return nil, err
 	}
 	results, err := MapLimit(files, FileConcurrency, ScanCodexFile)
 	if err != nil {
@@ -33,14 +30,46 @@ func ScanCodex(agentDir string) ([]SessionInfo, error) {
 	return out, nil
 }
 
-// ScanCodexFile aligns with scanCodexFile: a file may be deleted after enumeration,
-// so a failed stat only skips that file. Metadata (the session_meta first line) and
-// title (the first real user message, possibly past injected prompts and over-long
-// lines) each get their own scan pass.
+func codexSessionFiles(agentDir string) ([]string, error) {
+	years, err := ListDirsE(filepath.Join(agentDir, "sessions"))
+	if errors.Is(err, os.ErrNotExist) {
+		return []string{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	files := []string{}
+	for _, year := range years {
+		months, err := ListDirsE(year)
+		if err != nil {
+			return nil, err
+		}
+		for _, month := range months {
+			days, err := ListDirsE(month)
+			if err != nil {
+				return nil, err
+			}
+			for _, day := range days {
+				dayFiles, err := ListFilesE(day, ".jsonl", false)
+				if err != nil {
+					return nil, err
+				}
+				files = append(files, dayFiles...)
+			}
+		}
+	}
+	return files, nil
+}
+
+// ScanCodexFile reads session metadata and the first real user prompt. A file
+// that disappears after enumeration is skipped; other filesystem errors remain visible.
 func ScanCodexFile(file string) (*SessionInfo, error) {
 	info, err := os.Stat(file)
-	if err != nil {
+	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
+	}
+	if err != nil {
+		return nil, err
 	}
 
 	type codexMeta struct {
@@ -48,7 +77,7 @@ func ScanCodexFile(file string) (*SessionInfo, error) {
 		createdAt      *float64
 		guardianReview bool
 	}
-	meta := ScanLines(file, func(obj map[string]any) *codexMeta {
+	meta, err := ScanLinesE(file, func(obj map[string]any) *codexMeta {
 		if !IsStr(obj["type"], "session_meta") {
 			return nil
 		}
@@ -63,6 +92,9 @@ func ScanCodexFile(file string) (*SessionInfo, error) {
 			guardianReview: IsStr(payload["thread_source"], "guardian_review"),
 		}
 	}, ScanMaxBytes)
+	if err != nil {
+		return nil, err
+	}
 	if meta == nil {
 		return nil, nil
 	}
@@ -70,7 +102,7 @@ func ScanCodexFile(file string) (*SessionInfo, error) {
 		return nil, nil
 	}
 
-	title := ScanLines(file, func(obj map[string]any) *string {
+	title, err := ScanLinesE(file, func(obj map[string]any) *string {
 		if !IsStr(obj["type"], "response_item") {
 			return nil
 		}
@@ -80,6 +112,9 @@ func ScanCodexFile(file string) (*SessionInfo, error) {
 		}
 		return ToTitle(ContentToText(payload["content"]))
 	}, ScanMaxBytes)
+	if err != nil {
+		return nil, err
+	}
 
 	mtimeMs := FloorMtimeMs(info)
 	createdAt := mtimeMs

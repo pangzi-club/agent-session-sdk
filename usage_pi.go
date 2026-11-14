@@ -11,7 +11,10 @@ import (
 )
 
 func scanPiUsage(agentDir string) (*usageModuleResult, error) {
-	files := ListFiles(filepath.Join(agentDir, "agent", "sessions"), ".jsonl", true)
+	files, err := ListFilesE(filepath.Join(agentDir, "agent", "sessions"), ".jsonl", true)
+	if err != nil {
+		return nil, err
+	}
 	results, err := MapLimit(files, FileConcurrency, scanPiFileUsage)
 	if err != nil {
 		return nil, err
@@ -45,7 +48,10 @@ func scanPiSessionUsage(session SessionInfo, agentID string) (*piFileUsage, erro
 	if session.FilePath == nil || *session.FilePath == "" {
 		return &piFileUsage{session: session, records: []UsageRecord{}}, nil
 	}
-	lines := ReadAllLines(*session.FilePath)
+	lines, err := ReadAllLinesE(*session.FilePath)
+	if err != nil {
+		return nil, err
+	}
 	tally := &SessionTally{}
 	records := []UsageRecord{}
 	WalkLines(lines, func(obj map[string]any) {

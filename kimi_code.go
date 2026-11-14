@@ -7,6 +7,7 @@ package agentsession
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,12 +29,27 @@ type kimiCodeState struct {
 // ScanKimiCode scans the desktop app's per-agent wire transcripts.
 func ScanKimiCode(agentDir string) ([]SessionInfo, error) {
 	index := loadKimiCodeIndex(filepath.Join(agentDir, "session_index.jsonl"))
-	projectDirs := ListDirs(filepath.Join(agentDir, "sessions"))
+	projectDirs, err := ListDirsE(filepath.Join(agentDir, "sessions"))
+	if errors.Is(err, os.ErrNotExist) {
+		return []SessionInfo{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
 	results, err := MapLimit(projectDirs, FileConcurrency, func(projectDir string) ([]SessionInfo, error) {
-		sessionDirs := ListDirs(projectDir)
+		sessionDirs, err := ListDirsE(projectDir)
+		if err != nil {
+			return nil, err
+		}
 		sessionResults, err := MapLimit(sessionDirs, FileConcurrency, func(sessionDir string) ([]SessionInfo, error) {
 			state := loadKimiCodeState(filepath.Join(sessionDir, "state.json"))
-			agentDirs := ListDirs(filepath.Join(sessionDir, "agents"))
+			agentDirs, err := ListDirsE(filepath.Join(sessionDir, "agents"))
+			if errors.Is(err, os.ErrNotExist) {
+				return []SessionInfo{}, nil
+			}
+			if err != nil {
+				return nil, err
+			}
 			items, err := MapLimit(agentDirs, FileConcurrency, func(agentDir string) (*SessionInfo, error) {
 				return scanKimiCodeAgent(sessionDir, agentDir, state, index)
 			})

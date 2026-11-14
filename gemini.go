@@ -6,6 +6,7 @@ package agentsession
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -44,8 +45,11 @@ type geminiAgg struct {
 // ScanGemini aligns with scanGemini.
 func ScanGemini(agentDir string) ([]SessionInfo, error) {
 	entries, err := os.ReadDir(filepath.Join(agentDir, "tmp"))
+	if errors.Is(err, os.ErrNotExist) {
+		return []SessionInfo{}, nil
+	}
 	if err != nil {
-		entries = nil
+		return nil, err
 	}
 	var hashDirs []string
 	for _, entry := range entries {
@@ -71,12 +75,15 @@ func ScanGemini(agentDir string) ([]SessionInfo, error) {
 		}
 		logsFile := filepath.Join(dir, "logs.json")
 		logsStat, err := os.Stat(logsFile)
-		if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
 			continue
+		}
+		if err != nil {
+			return nil, err
 		}
 		raw, err := os.ReadFile(logsFile)
 		if err != nil {
-			continue
+			return nil, err
 		}
 		var parsed any
 		if json.Unmarshal(raw, &parsed) != nil {

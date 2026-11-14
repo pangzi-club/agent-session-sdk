@@ -1,6 +1,9 @@
 package agentsession
 
 import (
+	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 )
@@ -66,11 +69,31 @@ func IsKnownAgent(id string) bool {
 	return false
 }
 
-// ScanSessions scans every registered agent under home in parallel, preserving
-// registry order. A failing agent contributes no sessions instead of failing the
-// whole scan.
-func ScanSessions(home string) []SessionScanResult {
+// AgentScanFailure identifies an agent whose store could not be scanned.
+type AgentScanFailure struct {
+	AgentID   string
+	AgentName string
+	Directory string
+	Err       error
+}
+
+func (failure AgentScanFailure) Error() string {
+	return fmt.Sprintf("%s (%s): %v", failure.AgentID, failure.Directory, failure.Err)
+}
+
+func (failure AgentScanFailure) Unwrap() error { return failure.Err }
+
+// SessionScanReport retains partial success while making failed agents visible.
+type SessionScanReport struct {
+	Results  []SessionScanResult
+	Failures []AgentScanFailure
+}
+
+// ScanSessionsDetailed scans every registered agent under home in parallel.
+// A failure removes only that agent's sessions and is reported to the caller.
+func ScanSessionsDetailed(home string) SessionScanReport {
 	results := make([]SessionScanResult, len(agents))
+	failures := make([][]AgentScanFailure, len(agents))
 	var wg sync.WaitGroup
 	for i := range agents {
 		wg.Add(1)
@@ -82,14 +105,31 @@ func ScanSessions(home string) []SessionScanResult {
 				AgentName: def.name,
 				Sessions:  []SessionInfo{},
 			}
-			if sessions, err := def.scan(filepath.Join(home, def.directory)); err == nil && sessions != nil {
+			directory := filepath.Join(home, def.directory)
+			sessions, err := def.scan(directory)
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				failures[i] = append(failures[i], AgentScanFailure{AgentID: def.id, AgentName: def.name, Directory: directory, Err: err})
+			} else if sessions != nil {
 				result.Sessions = sessions
 			}
-			// Always emit the boolean: false means the agent cannot delete sessions.
 			result.CanDeleteSessions = &def.canDelete
 			results[i] = result
 		}(i)
 	}
 	wg.Wait()
-	return results
+	return SessionScanReport{Results: results, Failures: joinAgentFailures(failures)}
+}
+
+func joinAgentFailures(groups [][]AgentScanFailure) []AgentScanFailure {
+	out := []AgentScanFailure{}
+	for _, group := range groups {
+		out = append(out, group...)
+	}
+	return out
+}
+
+// ScanSessions preserves the original empty-on-error convenience API. Use
+// ScanSessionsDetailed when an empty store must be distinguished from a failure.
+func ScanSessions(home string) []SessionScanResult {
+	return ScanSessionsDetailed(home).Results
 }

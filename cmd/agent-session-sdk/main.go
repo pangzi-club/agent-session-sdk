@@ -9,6 +9,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -72,53 +73,78 @@ type cliOptions struct {
 }
 
 func main() {
-	args := os.Args[1:]
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+func run(args []string, stdout, stderr *os.File) int {
 	if len(args) == 0 {
-		fmt.Fprint(os.Stderr, helpText)
-		os.Exit(2)
+		fmt.Fprint(stderr, helpText)
+		return 2
 	}
 	command := args[0]
 	if command == "-h" || command == "--help" || command == "help" {
-		fmt.Print(helpText)
-		return
+		fmt.Fprint(stdout, helpText)
+		return 0
 	}
 
-	opts := parseFlags(command, args[1:])
+	opts, err := parseFlags(command, args[1:], stderr)
+	if err != nil {
+		return 2
+	}
 	var payload any
+	var failures []agentsession.AgentScanFailure
 	switch command {
 	case "sessions":
 		if opts.index {
-			payload = listIndexedSessions(opts)
+			payload = listIndexedSessions(opts, stderr)
 		} else {
-			payload = filterSessions(agentsession.ScanSessions(opts.home), opts.agents)
+			report := agentsession.ScanSessionsDetailed(opts.home)
+			payload = filterSessions(report.Results, opts.agents)
+			failures = report.Failures
 		}
 	case "usage":
-		payload = costify(filterUsage(agentsession.ScanAllUsage(opts.home), opts.agents), opts.cost)
+		report := agentsession.ScanAllUsageDetailed(opts.home)
+		payload = costify(filterUsage(report.Scan, opts.agents), opts.cost)
+		failures = report.Failures
 	case "summary":
-		payload = filterSummaries(agentsession.Summarize(agentsession.ScanAllUsage(opts.home)), opts.agents)
+		report := agentsession.ScanAllUsageDetailed(opts.home)
+		payload = filterSummaries(agentsession.Summarize(report.Scan), opts.agents)
+		failures = report.Failures
 	case "transcript":
-		payload = loadTranscript(opts)
+		payload = loadTranscript(opts, stderr)
 	case "search":
-		payload = searchIndexedSessions(opts)
+		payload = searchIndexedSessions(opts, stderr)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown subcommand: %s\n\n", command)
-		fmt.Fprint(os.Stderr, helpText)
-		os.Exit(2)
+		fmt.Fprintf(stderr, "unknown subcommand: %s\n\n", command)
+		fmt.Fprint(stderr, helpText)
+		return 2
 	}
 	if payload == nil {
-		os.Exit(1)
+		return 1
 	}
 
-	if err := encode(os.Stdout, payload, opts.pretty); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to serialize output: %v\n", err)
-		os.Exit(1)
+	if err := encode(stdout, payload, opts.pretty); err != nil {
+		fmt.Fprintf(stderr, "failed to serialize output: %v\n", err)
+		return 1
 	}
+	failed := false
+	for _, failure := range failures {
+		if len(opts.agents) == 0 || opts.agents[failure.AgentID] {
+			fmt.Fprintf(stderr, "agent scan failed: %v\n", failure)
+			failed = true
+		}
+	}
+	if failed {
+		return 1
+	}
+	return 0
 }
 
 // parseFlags handles the common flags (--home / --agent / --pretty) plus the
 // per-subcommand ones (--session, --cost), and validates agent ids.
-func parseFlags(command string, args []string) *cliOptions {
+func parseFlags(command string, args []string, stderr *os.File) (*cliOptions, error) {
 	searchQuery := ""
+	errUsage := errors.New("invalid command usage")
 	if command == "search" {
 		flags := make([]string, 0, len(args))
 		valueFlags := map[string]bool{"home": true, "agent": true, "session": true, "limit": true, "offset": true}
@@ -129,8 +155,8 @@ func parseFlags(command string, args []string) *cliOptions {
 				name := strings.TrimLeft(arg, "-")
 				if !strings.Contains(arg, "=") && valueFlags[name] {
 					if i+1 >= len(args) {
-						fmt.Fprintf(os.Stderr, "flag %s needs a value\n", arg)
-						os.Exit(2)
+						fmt.Fprintf(stderr, "flag %s needs a value\n", arg)
+						return nil, errUsage
 					}
 					i++
 					flags = append(flags, args[i])
@@ -138,19 +164,20 @@ func parseFlags(command string, args []string) *cliOptions {
 				continue
 			}
 			if searchQuery != "" {
-				fmt.Fprintf(os.Stderr, "unknown argument: %s\n", arg)
-				os.Exit(2)
+				fmt.Fprintf(stderr, "unknown argument: %s\n", arg)
+				return nil, errUsage
 			}
 			searchQuery = arg
 		}
 		if searchQuery == "" {
-			fmt.Fprintln(os.Stderr, "search needs <query>")
-			os.Exit(2)
+			fmt.Fprintln(stderr, "search needs <query>")
+			return nil, errUsage
 		}
 		args = flags
 	}
-	fs := flag.NewFlagSet(command, flag.ExitOnError)
-	fs.Usage = func() { fmt.Fprint(os.Stderr, helpText) }
+	fs := flag.NewFlagSet(command, flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = func() { fmt.Fprint(stderr, helpText) }
 	opts := &cliOptions{agents: map[string]bool{}}
 	fs.StringVar(&opts.home, "home", "", "target user home directory (default $HOME)")
 	agentList := fs.String("agent", "", "only process the given agents, comma-separated")
@@ -162,62 +189,61 @@ func parseFlags(command string, args []string) *cliOptions {
 	fs.IntVar(&opts.limit, "limit", 0, "limit indexed results (0 means unlimited)")
 	fs.IntVar(&opts.offset, "offset", 0, "skip leading indexed results")
 	if err := fs.Parse(args); err != nil {
-		os.Exit(2)
+		return nil, err
 	}
 	if remaining := fs.Args(); len(remaining) > 0 {
-		fmt.Fprintf(os.Stderr, "unknown argument: %s\n", remaining[0])
-		os.Exit(2)
+		fmt.Fprintf(stderr, "unknown argument: %s\n", remaining[0])
+		return nil, errUsage
 	}
 	opts.search = searchQuery
 	for _, id := range strings.Split(*agentList, ",") {
 		if id = strings.TrimSpace(id); id != "" {
 			if !agentsession.IsKnownAgent(id) {
-				fmt.Fprintf(os.Stderr, "unknown agent: %s (valid: %s)\n", id,
+				fmt.Fprintf(stderr, "unknown agent: %s (valid: %s)\n", id,
 					strings.Join(agentsession.KnownAgentIDs(), " "))
-				os.Exit(2)
+				return nil, errUsage
 			}
 			opts.agents[id] = true
 		}
 	}
 	if command == "transcript" {
 		if len(opts.agents) != 1 {
-			fmt.Fprintln(os.Stderr, "transcript needs exactly one --agent")
-			os.Exit(2)
+			fmt.Fprintln(stderr, "transcript needs exactly one --agent")
+			return nil, errUsage
 		}
 		if opts.session == "" {
-			fmt.Fprintln(os.Stderr, "transcript needs --session <id>")
-			os.Exit(2)
+			fmt.Fprintln(stderr, "transcript needs --session <id>")
+			return nil, errUsage
 		}
 	}
 	if opts.index && command != "sessions" && command != "transcript" {
-		fmt.Fprintln(os.Stderr, "--index is valid for sessions and transcript only")
-		os.Exit(2)
+		fmt.Fprintln(stderr, "--index is valid for sessions and transcript only")
+		return nil, errUsage
 	}
 	if opts.noRefresh && ((command == "sessions" || command == "transcript") && !opts.index) {
-		fmt.Fprintln(os.Stderr, "--no-refresh needs --index")
-		os.Exit(2)
+		fmt.Fprintln(stderr, "--no-refresh needs --index")
+		return nil, errUsage
 	}
 	if opts.noRefresh && command != "sessions" && command != "search" && command != "transcript" {
-		fmt.Fprintln(os.Stderr, "--no-refresh is valid for indexed sessions, search and transcript only")
-		os.Exit(2)
+		fmt.Fprintln(stderr, "--no-refresh is valid for indexed sessions, search and transcript only")
+		return nil, errUsage
 	}
 	if (command != "search" && (command != "sessions" || !opts.index)) && (opts.limit != 0 || opts.offset != 0) {
-		fmt.Fprintln(os.Stderr, "--limit/--offset are valid for indexed sessions and search only")
-		os.Exit(2)
+		fmt.Fprintln(stderr, "--limit/--offset are valid for indexed sessions and search only")
+		return nil, errUsage
 	}
 	if opts.limit < 0 || opts.offset < 0 {
-		fmt.Fprintln(os.Stderr, "--limit/--offset cannot be negative")
-		os.Exit(2)
+		fmt.Fprintln(stderr, "--limit/--offset cannot be negative")
+		return nil, errUsage
 	}
 	if opts.home == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "cannot determine home directory: %v\n", err)
-			os.Exit(1)
+			return nil, fmt.Errorf("cannot determine home directory: %w", err)
 		}
 		opts.home = home
 	}
-	return opts
+	return opts, nil
 }
 
 // costRecord wraps UsageRecord with the optional cost fields. They sit outside
@@ -269,16 +295,16 @@ func selectedAgentIDs(selected map[string]bool) []string {
 	return ids
 }
 
-func listIndexedSessions(opts *cliOptions) any {
+func listIndexedSessions(opts *cliOptions, stderr *os.File) any {
 	index, err := agentsession.OpenSessionIndex(opts.home)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to open session index: %v\n", err)
+		fmt.Fprintf(stderr, "failed to open session index: %v\n", err)
 		return nil
 	}
 	defer index.Close()
 	if !opts.noRefresh {
 		if _, err := index.Refresh(selectedAgentIDs(opts.agents)...); err != nil {
-			fmt.Fprintf(os.Stderr, "failed to refresh session index: %v\n", err)
+			fmt.Fprintf(stderr, "failed to refresh session index: %v\n", err)
 			return nil
 		}
 	}
@@ -288,22 +314,22 @@ func listIndexedSessions(opts *cliOptions) any {
 		Offset:   opts.offset,
 	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to query session index: %v\n", err)
+		fmt.Fprintf(stderr, "failed to query session index: %v\n", err)
 		return nil
 	}
 	return results
 }
 
-func searchIndexedSessions(opts *cliOptions) any {
+func searchIndexedSessions(opts *cliOptions, stderr *os.File) any {
 	index, err := agentsession.OpenSessionIndex(opts.home)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to open session index: %v\n", err)
+		fmt.Fprintf(stderr, "failed to open session index: %v\n", err)
 		return nil
 	}
 	defer index.Close()
 	if !opts.noRefresh {
 		if _, err := index.Refresh(selectedAgentIDs(opts.agents)...); err != nil {
-			fmt.Fprintf(os.Stderr, "failed to refresh session index: %v\n", err)
+			fmt.Fprintf(stderr, "failed to refresh session index: %v\n", err)
 			return nil
 		}
 	}
@@ -314,13 +340,13 @@ func searchIndexedSessions(opts *cliOptions) any {
 		Offset:   opts.offset,
 	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to search session index: %v\n", err)
+		fmt.Fprintf(stderr, "failed to search session index: %v\n", err)
 		return nil
 	}
 	return results
 }
 
-func loadTranscript(opts *cliOptions) any {
+func loadTranscript(opts *cliOptions, stderr *os.File) any {
 	var agentID string
 	for id := range opts.agents {
 		agentID = id
@@ -329,26 +355,27 @@ func loadTranscript(opts *cliOptions) any {
 	if opts.index {
 		index, err := agentsession.OpenSessionIndex(opts.home)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "failed to open session index: %v\n", err)
+			fmt.Fprintf(stderr, "failed to open session index: %v\n", err)
 			return nil
 		}
 		if !opts.noRefresh {
 			if _, err := index.Refresh(agentID); err != nil {
 				index.Close()
-				fmt.Fprintf(os.Stderr, "failed to refresh session index: %v\n", err)
+				fmt.Fprintf(stderr, "failed to refresh session index: %v\n", err)
 				return nil
 			}
 		}
 		info, err = index.Get(agentID, opts.session)
 		if err != nil {
 			index.Close()
-			fmt.Fprintf(os.Stderr, "%v\n", err)
+			fmt.Fprintf(stderr, "%v\n", err)
 			return nil
 		}
 		index.Close()
-		return transcriptEntries(agentID, *info)
+		return transcriptEntries(agentID, *info, stderr)
 	}
-	for _, result := range agentsession.ScanSessions(opts.home) {
+	report := agentsession.ScanSessionsDetailed(opts.home)
+	for _, result := range report.Results {
 		if result.AgentID != agentID {
 			continue
 		}
@@ -359,17 +386,26 @@ func loadTranscript(opts *cliOptions) any {
 			}
 		}
 	}
+	agentFailed := false
+	for _, failure := range report.Failures {
+		if failure.AgentID == agentID {
+			fmt.Fprintf(stderr, "agent scan failed: %v\n", failure)
+			agentFailed = true
+		}
+	}
 	if info == nil {
-		fmt.Fprintf(os.Stderr, "session %q not found for agent %q\n", opts.session, agentID)
+		if !agentFailed {
+			fmt.Fprintf(stderr, "session %q not found for agent %q\n", opts.session, agentID)
+		}
 		return nil
 	}
-	return transcriptEntries(agentID, *info)
+	return transcriptEntries(agentID, *info, stderr)
 }
 
-func transcriptEntries(agentID string, info agentsession.SessionInfo) any {
+func transcriptEntries(agentID string, info agentsession.SessionInfo, stderr *os.File) any {
 	entries, err := agentsession.LoadTranscript(agentID, info)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to load transcript: %v\n", err)
+		fmt.Fprintf(stderr, "failed to load transcript: %v\n", err)
 		return nil
 	}
 	if entries == nil {

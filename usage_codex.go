@@ -7,19 +7,14 @@ package agentsession
 
 import (
 	"math"
-	"path/filepath"
 	"strings"
 	"unicode"
 )
 
 func scanCodexUsage(agentDir string) (*usageModuleResult, error) {
-	var files []string
-	for _, year := range ListDirs(filepath.Join(agentDir, "sessions")) {
-		for _, month := range ListDirs(year) {
-			for _, day := range ListDirs(month) {
-				files = append(files, ListFiles(day, ".jsonl", false)...)
-			}
-		}
+	files, err := codexSessionFiles(agentDir)
+	if err != nil {
+		return nil, err
 	}
 	results, err := MapLimit(files, FileConcurrency, scanCodexFileUsage)
 	if err != nil {
@@ -63,7 +58,10 @@ func scanCodexSessionUsage(session SessionInfo, agentID string) ([]UsageRecord, 
 }
 
 func scanCodexUsageRecords(file, sessionID, agentID string) ([]UsageRecord, error) {
-	lines := ReadAllLines(file)
+	lines, err := ReadAllLinesE(file)
+	if err != nil {
+		return nil, err
+	}
 	tally := &SessionTally{}
 	records := []UsageRecord{}
 	var model *string

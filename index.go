@@ -25,8 +25,9 @@ const (
 // source stores remain authoritative; Refresh only re-runs an agent scanner
 // when that agent's store file signature changes.
 type SessionIndex struct {
-	db   *sql.DB
-	home string
+	db      *sql.DB
+	home    string
+	refresh sync.Mutex
 }
 
 // SessionIndexQuery selects indexed sessions. Empty AgentIDs means all agents,
@@ -100,6 +101,8 @@ func (index *SessionIndex) Close() error {
 // checked. Scanner failures leave an agent's old indexed rows and signature
 // intact so the next Refresh retries that agent.
 func (index *SessionIndex) Refresh(agentIDs ...string) (RefreshStats, error) {
+	index.refresh.Lock()
+	defer index.refresh.Unlock()
 	selected, err := selectAgentDefs(agentIDs)
 	if err != nil {
 		return RefreshStats{}, err
@@ -118,18 +121,22 @@ func (index *SessionIndex) Refresh(agentIDs ...string) (RefreshStats, error) {
 	}
 	results := make([]scanResult, len(selected))
 	var wg sync.WaitGroup
+	// A db failure below aborts the loop, but already-launched scan goroutines
+	// must still be waited for before Refresh returns (the refresh lock is
+	// released by the deferred unlock).
+	var abortErr error
 	for i, def := range selected {
 		storeRoot := filepath.Join(index.home, def.directory)
 		result := scanResult{def: def}
 		result.before, result.signatureErr = agentStoreSignature(storeRoot)
 		results[i] = result
 		if result.signatureErr != nil {
-			stats.Failures++
 			continue
 		}
 		known, err := index.agentSignatureMatches(def.id, result.before)
 		if err != nil {
-			return stats, err
+			abortErr = err
+			break
 		}
 		if known {
 			results[i].skipped = true
@@ -147,23 +154,28 @@ func (index *SessionIndex) Refresh(agentIDs ...string) (RefreshStats, error) {
 			result := scanResult{def: def, before: before}
 			storeRoot := filepath.Join(index.home, def.directory)
 			result.sessions, result.scanErr = def.scan(storeRoot)
-			result.after, _ = agentStoreSignature(storeRoot)
-			if result.after == "" {
-				result.after = before
-			}
+			result.after, result.signatureErr = agentStoreSignature(storeRoot)
 			results[i] = result
 		}(i, def, result.before)
 	}
 	wg.Wait()
+	if abortErr != nil {
+		return stats, abortErr
+	}
 
+	failures := []error{}
 	for _, result := range results {
 		if result.skipped {
 			continue
 		}
 		if result.signatureErr != nil || result.scanErr != nil {
-			if result.scanErr != nil {
-				stats.Failures++
+			stats.Failures++
+			err := result.signatureErr
+			if err == nil {
+				err = result.scanErr
 			}
+			failures = append(failures, AgentScanFailure{AgentID: result.def.id, AgentName: result.def.name,
+				Directory: filepath.Join(index.home, result.def.directory), Err: err})
 			continue
 		}
 		signature := result.after
@@ -175,9 +187,15 @@ func (index *SessionIndex) Refresh(agentIDs ...string) (RefreshStats, error) {
 			sessions = []SessionInfo{}
 		}
 		if err := index.replaceAgentSessions(result.def.id, signature, sessions); err != nil {
-			return stats, err
+			// The index db itself is failing: report it ahead of the collected
+			// agent failures and stop writing.
+			failures = append([]error{fmt.Errorf("update index rows for %s: %w", result.def.id, err)}, failures...)
+			break
 		}
 		stats.Scanned++
+	}
+	if len(failures) != 0 {
+		return stats, errors.Join(failures...)
 	}
 	return stats, nil
 }

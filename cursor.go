@@ -10,6 +10,7 @@ package agentsession
 // that already contain - cannot be recovered).
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -26,8 +27,22 @@ type cursorSessionDir struct {
 // ScanCursor aligns with scanCursor.
 func ScanCursor(agentDir string) ([]SessionInfo, error) {
 	var dirs []cursorSessionDir
-	for _, projectDir := range ListDirs(filepath.Join(agentDir, "projects")) {
-		for _, sessionDir := range ListDirs(filepath.Join(projectDir, "agent-transcripts")) {
+	projectDirs, err := ListDirsE(filepath.Join(agentDir, "projects"))
+	if errors.Is(err, os.ErrNotExist) {
+		return []SessionInfo{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	for _, projectDir := range projectDirs {
+		sessionDirs, err := ListDirsE(filepath.Join(projectDir, "agent-transcripts"))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		for _, sessionDir := range sessionDirs {
 			dirs = append(dirs, cursorSessionDir{projectDir: projectDir, sessionDir: sessionDir})
 		}
 	}
@@ -48,11 +63,17 @@ func scanCursorSessionDir(item cursorSessionDir) (*SessionInfo, error) {
 	id := filepath.Base(item.sessionDir)
 	file := filepath.Join(item.sessionDir, id+".jsonl")
 	info, err := os.Stat(file)
-	if err != nil {
+	if errors.Is(err, os.ErrNotExist) {
 		// No same-named transcript file (incomplete directory / not a session directory): skip
 		return nil, nil
 	}
-	title := ScanLines(file, pickCursorTitle, ScanMaxBytes)
+	if err != nil {
+		return nil, err
+	}
+	title, err := ScanLinesE(file, pickCursorTitle, ScanMaxBytes)
+	if err != nil {
+		return nil, err
+	}
 	return &SessionInfo{
 		ID:        id,
 		Workspace: decodeCursorProjectDirName(filepath.Base(item.projectDir)),

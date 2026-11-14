@@ -33,7 +33,10 @@ func TestScanQoderFileUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	records := scanQoderFileUsage(file, "qoder-cn")
+	records, err := scanQoderFileUsage(file, "qoder-cn")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(records) != 3 {
 		t.Fatalf("records = %d, want 3", len(records))
 	}

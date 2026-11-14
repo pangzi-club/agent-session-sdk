@@ -11,8 +11,12 @@ import (
 )
 
 func scanDshUsage(agentDir string) (*usageModuleResult, error) {
+	files, err := listDshSessionFilesE(agentDir)
+	if err != nil {
+		return nil, err
+	}
 	results, err := MapLimit(
-		ListDshSessionFiles(agentDir),
+		files,
 		FileConcurrency,
 		scanDshFileUsage,
 	)

@@ -8,6 +8,7 @@ package agentsession
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -32,24 +33,53 @@ const dshMinSessionVersion = 3
 // directory (in-place migration) only the highest is taken, so each session
 // directory yields exactly one session.
 func ListDshSessionFiles(agentDir string) []string {
+	files, _ := listDshSessionFilesE(agentDir)
+	return files
+}
+
+func listDshSessionFilesE(agentDir string) ([]string, error) {
+	projectDirs, err := ListDirsE(filepath.Join(agentDir, "sessions"))
+	if errors.Is(err, os.ErrNotExist) {
+		return []string{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
 	var sessionDirs []string
-	for _, projectDir := range ListDirs(filepath.Join(agentDir, "sessions")) {
-		sessionDirs = append(sessionDirs, ListDirs(projectDir)...)
+	for _, projectDir := range projectDirs {
+		dirs, err := ListDirsE(projectDir)
+		if err != nil {
+			return nil, err
+		}
+		sessionDirs = append(sessionDirs, dirs...)
 	}
 	var files []string
 	for _, sessionDir := range sessionDirs {
-		if file := pickDshSessionFile(sessionDir); file != "" {
+		file, err := pickDshSessionFileE(sessionDir)
+		if err != nil {
+			return nil, err
+		}
+		if file != "" {
 			files = append(files, file)
 		}
 	}
-	return files
+	return files, nil
 }
 
 // pickDshSessionFile aligns with pickDshSessionFile.
 func pickDshSessionFile(sessionDir string) string {
+	file, _ := pickDshSessionFileE(sessionDir)
+	return file
+}
+
+func pickDshSessionFileE(sessionDir string) (string, error) {
+	files, err := ListFilesE(sessionDir, ".zstd", false)
+	if err != nil {
+		return "", err
+	}
 	best := ""
 	bestVersion := -1
-	for _, file := range ListFiles(sessionDir, ".zstd", false) {
+	for _, file := range files {
 		matched := dshSessionFileRe.FindStringSubmatch(filepath.Base(file))
 		if matched == nil {
 			continue
@@ -63,7 +93,7 @@ func pickDshSessionFile(sessionDir string) string {
 			bestVersion = version
 		}
 	}
-	return best
+	return best, nil
 }
 
 // DecompressZstd is shared by the dsh session and usage scans (one
@@ -74,7 +104,11 @@ func DecompressZstd(data []byte) ([]byte, error) {
 
 // ScanDsh mirrors scanDsh.
 func ScanDsh(agentDir string) ([]SessionInfo, error) {
-	results, err := MapLimit(ListDshSessionFiles(agentDir), FileConcurrency, ScanDshFile)
+	files, err := listDshSessionFilesE(agentDir)
+	if err != nil {
+		return nil, err
+	}
+	results, err := MapLimit(files, FileConcurrency, ScanDshFile)
 	if err != nil {
 		return nil, err
 	}

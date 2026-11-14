@@ -7,6 +7,7 @@ package agentsession
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,8 +38,11 @@ func ScanOpenCode(agentDir string) ([]SessionInfo, error) {
 func scanOpenCodeDatabase(agentDir string) ([]SessionInfo, error) {
 	dbPath := filepath.Join(agentDir, "opencode.db")
 	db, err := OpenSQLite(dbPath)
-	if err != nil {
+	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
+	}
+	if err != nil {
+		return nil, err
 	}
 	defer db.Close()
 	rows, err := QueryMaps(db, `SELECT s.id, s.parent_id, s.directory, s.title, s.time_created, s.time_updated,
@@ -46,8 +50,7 @@ func scanOpenCodeDatabase(agentDir string) ([]SessionInfo, error) {
 		(SELECT COALESCE(SUM(LENGTH(m.data)), 0) FROM message m WHERE m.session_id = s.id) AS size_bytes
 		FROM session s`)
 	if err != nil {
-		// Missing table (db not fully created) and the like: return empty so the storage fallback results stand
-		return nil, nil
+		return nil, err
 	}
 	out := []SessionInfo{}
 	for _, row := range rows {
@@ -82,12 +85,21 @@ func scanOpenCodeDatabase(agentDir string) ([]SessionInfo, error) {
 
 // scanOpenCodeLegacyStorage aligns with scanLegacyStorage: storage/session/<projectID>/<id>.json.
 func scanOpenCodeLegacyStorage(agentDir string) ([]SessionInfo, error) {
-	files := ListFiles(filepath.Join(agentDir, "storage", "session"), ".json", true)
+	files, err := ListFilesE(filepath.Join(agentDir, "storage", "session"), ".json", true)
+	if errors.Is(err, os.ErrNotExist) {
+		return []SessionInfo{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
 	out := []SessionInfo{}
 	for _, file := range files {
 		raw, err := os.ReadFile(file)
-		if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
 			continue
+		}
+		if err != nil {
+			return nil, err
 		}
 		var parsed any
 		if json.Unmarshal(raw, &parsed) != nil {

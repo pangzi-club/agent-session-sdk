@@ -13,7 +13,10 @@ import (
 
 // ScanPi aligns with scanPi.
 func ScanPi(agentDir string) ([]SessionInfo, error) {
-	files := ListFiles(filepath.Join(agentDir, "agent", "sessions"), ".jsonl", true)
+	files, err := ListFilesE(filepath.Join(agentDir, "agent", "sessions"), ".jsonl", true)
+	if err != nil {
+		return nil, err
+	}
 	results, err := MapLimit(files, FileConcurrency, ScanPiFile)
 	if err != nil {
 		return nil, err

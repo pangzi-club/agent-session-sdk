@@ -3,11 +3,13 @@ package agentsession
 // opencode.go mirrors src/main/usage/opencode.ts:
 // the message table's data column holds JSON (assistant carries tokens{input,output,reasoning,cache{read,write}}, reasoning ignored)
 // + part rows with data.type='tool' as tool events, merged per session and walked in time order.
-// Same as TS: db unopenable → empty result (no status downgrade); record points missing tokens still count toward the tally, then are skipped.
+// A missing database is an empty store; open and query failures are returned to the caller.
 
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -32,13 +34,16 @@ func scanOpenCodeUsage(agentDir string) (*usageModuleResult, error) {
 	dbPath := filepath.Join(agentDir, "opencode.db")
 	db, err := OpenSQLite(dbPath)
 	if err != nil {
-		return &usageModuleResult{sessions: []SessionInfo{}, records: []UsageRecord{}}, nil
+		if errors.Is(err, os.ErrNotExist) {
+			return &usageModuleResult{sessions: []SessionInfo{}, records: []UsageRecord{}}, nil
+		}
+		return nil, err
 	}
 	defer db.Close()
 
 	result, err := scanOpenCodeDb(db, dbPath)
 	if err != nil {
-		return &usageModuleResult{sessions: []SessionInfo{}, records: []UsageRecord{}}, nil
+		return nil, err
 	}
 	return result, nil
 }
@@ -47,7 +52,7 @@ func scanOpenCodeDb(db *sql.DB, dbPath string) (*usageModuleResult, error) {
 	sessionRows, err := QueryMaps(db,
 		"SELECT id, parent_id, directory, title, time_created, time_updated FROM session")
 	if err != nil {
-		return &usageModuleResult{sessions: []SessionInfo{}, records: []UsageRecord{}}, nil
+		return nil, err
 	}
 	sessions := []SessionInfo{}
 	sessionIDs := map[string]bool{}
@@ -94,7 +99,7 @@ func scanOpenCodeDb(db *sql.DB, dbPath string) (*usageModuleResult, error) {
 
 	messageRows, err := QueryMaps(db, "SELECT session_id, data FROM message")
 	if err != nil {
-		return &usageModuleResult{sessions: sessions, records: []UsageRecord{}}, nil
+		return nil, err
 	}
 	for _, row := range messageRows {
 		var obj map[string]any
@@ -122,7 +127,7 @@ func scanOpenCodeDb(db *sql.DB, dbPath string) (*usageModuleResult, error) {
 
 	partRows, err := QueryMaps(db, "SELECT session_id, time_created, data FROM part")
 	if err != nil {
-		return &usageModuleResult{sessions: sessions, records: []UsageRecord{}}, nil
+		return nil, err
 	}
 	for _, row := range partRows {
 		var obj map[string]any

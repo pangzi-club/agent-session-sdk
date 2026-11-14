@@ -15,8 +15,12 @@ import (
 )
 
 func scanGrokUsage(agentDir string) (*usageModuleResult, error) {
+	dirs, err := listGrokSessionDirsE(agentDir)
+	if err != nil {
+		return nil, err
+	}
 	results, err := MapLimit(
-		ListGrokSessionDirs(agentDir),
+		dirs,
 		FileConcurrency,
 		scanGrokSessionUsage,
 	)
@@ -48,7 +52,11 @@ func scanGrokSessionUsage(dir string) (*grokSessionUsage, error) {
 
 	tally := &SessionTally{}
 	records := []UsageRecord{}
-	WalkLines(ReadAllLines(filepath.Join(dir, "updates.jsonl")), func(obj map[string]any) {
+	lines, err := ReadAllLinesE(filepath.Join(dir, "updates.jsonl"))
+	if err != nil {
+		return nil, err
+	}
+	WalkLines(lines, func(obj map[string]any) {
 		params := GetMap(obj["params"])
 		update := GetMap(params["update"])
 		if update == nil {

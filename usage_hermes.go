@@ -9,6 +9,8 @@ package agentsession
 // Same as TS: db missing/unopenable (hermes not installed) → empty; query failure → error (caller treats the agent as having no data).
 
 import (
+	"errors"
+	"os"
 	"path/filepath"
 	"sort"
 )
@@ -32,7 +34,10 @@ func scanHermesUsage(agentDir string) (*usageModuleResult, error) {
 	dbPath := filepath.Join(agentDir, "state.db")
 	db, err := OpenSQLite(dbPath)
 	if err != nil {
-		// hermes not installed: treat as no data (same as zcode); don't mark this module as failed
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		// An absent store is normal; an unreadable or invalid one is a failure.
 		return &usageModuleResult{
 			sessions: []SessionInfo{},
 			records:  []UsageRecord{},

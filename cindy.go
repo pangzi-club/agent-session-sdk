@@ -10,6 +10,7 @@ package agentsession
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,7 +18,10 @@ import (
 )
 
 func ScanCindy(agentDir string) ([]SessionInfo, error) {
-	database, ownerDir := activeCindyProfile(agentDir)
+	database, ownerDir, err := activeCindyProfileE(agentDir)
+	if err != nil {
+		return nil, err
+	}
 	if database == "" || ownerDir == "" {
 		return []SessionInfo{}, nil
 	}
@@ -46,7 +50,10 @@ func ScanCindy(agentDir string) ([]SessionInfo, error) {
 
 		createdAt := FirstOr(0.0, AsEpochMs(row["created_at"]))
 		updatedAt := FirstOr(createdAt, AsEpochMs(row["updated_at"]))
-		file := cindyTranscript(agentDir, workspace, AsString(row["agent_kind"]), row["sdk_session_id"])
+		file, err := cindyTranscriptE(agentDir, workspace, AsString(row["agent_kind"]), row["sdk_session_id"])
+		if err != nil {
+			return nil, err
+		}
 		out = append(out, SessionInfo{
 			transcriptFormat: cindyTranscriptFormat(FirstOr("", AsString(row["agent_kind"])), FirstOr("", AsString(row["sdk_session_id"]))),
 			ID:               *id,
@@ -65,12 +72,29 @@ func ScanCindy(agentDir string) ([]SessionInfo, error) {
 // owns one database per dataOwnerId and the matching owner directory proves
 // that the profile's local namespace exists on this machine.
 func activeCindyProfile(agentDir string) (string, string) {
-	databases := ListFiles(agentDir, ".db", false)
+	database, ownerDir, _ := activeCindyProfileE(agentDir)
+	return database, ownerDir
+}
+
+func activeCindyProfileE(agentDir string) (string, string, error) {
+	databases, err := ListFilesE(agentDir, ".db", false)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", "", nil
+	}
+	if err != nil {
+		return "", "", err
+	}
 	var database string
 	var databaseActivity time.Time
 	for _, candidate := range databases {
 		info, err := os.Stat(candidate)
-		if err != nil || !info.Mode().IsRegular() {
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return "", "", err
+		}
+		if !info.Mode().IsRegular() {
 			continue
 		}
 		activity := cindyProfileActivity(candidate, info)
@@ -80,18 +104,25 @@ func activeCindyProfile(agentDir string) (string, string) {
 		}
 	}
 	if database == "" {
-		return "", ""
+		return "", "", nil
 	}
 
 	dataOwnerID := strings.TrimPrefix(strings.TrimSuffix(filepath.Base(database), ".db"), "cindy-")
 	if dataOwnerID == "" {
-		return "", ""
+		return "", "", nil
 	}
 	ownerDir := filepath.Join(agentDir, "owners", cindyOwnerDirName(dataOwnerID))
-	if info, err := os.Stat(ownerDir); err != nil || !info.IsDir() {
-		return "", ""
+	info, err := os.Stat(ownerDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", "", nil
 	}
-	return database, ownerDir
+	if err != nil {
+		return "", "", err
+	}
+	if !info.IsDir() {
+		return "", "", nil
+	}
+	return database, ownerDir, nil
 }
 
 // Cindy may leave recent session metadata in WAL before a checkpoint, so
@@ -119,21 +150,21 @@ func isCindyHidden(row map[string]any) bool {
 	return false
 }
 
-func cindyTranscript(agentDir string, workspace, agentKind *string, value any) string {
+func cindyTranscriptE(agentDir string, workspace, agentKind *string, value any) (string, error) {
 	file := AsString(value)
 	if file == nil || *file == "" {
-		return ""
+		return "", nil
 	}
 	if agentKind == nil || filepath.IsAbs(*file) {
-		return *file
+		return *file, nil
 	}
 	switch *agentKind {
 	case "codex":
-		return cindyCodexTranscript(agentDir, *file)
+		return cindyCodexTranscriptE(agentDir, *file)
 	case "cc":
-		return cindyClaudeTranscript(agentDir, workspace, *file)
+		return cindyClaudeTranscriptE(agentDir, workspace, *file)
 	}
-	return *file
+	return *file, nil
 }
 
 func cindyTranscriptFormat(agentKind, file string) string {
@@ -157,8 +188,13 @@ func cindyTranscriptFormat(agentKind, file string) string {
 // fallback. A session may move with its workspace, so a direct miss is followed
 // by a filename lookup.
 func cindyClaudeTranscript(agentDir string, workspace *string, sessionID string) string {
+	file, _ := cindyClaudeTranscriptE(agentDir, workspace, sessionID)
+	return file
+}
+
+func cindyClaudeTranscriptE(agentDir string, workspace *string, sessionID string) (string, error) {
 	if workspace == nil || *workspace == "" || sessionID == "" {
-		return ""
+		return "", nil
 	}
 	home := filepath.Dir(filepath.Dir(filepath.Dir(agentDir)))
 	configDirs := []string{}
@@ -170,15 +206,22 @@ func cindyClaudeTranscript(agentDir string, workspace *string, sessionID string)
 		root := filepath.Join(configDir, "projects")
 		file := filepath.Join(root, cindyClaudeProjectKey(*workspace), sessionID+".jsonl")
 		if regularFile(file) {
-			return file
+			return file, nil
 		}
-		for _, candidate := range ListFiles(root, ".jsonl", true) {
+		candidates, err := ListFilesE(root, ".jsonl", true)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		for _, candidate := range candidates {
 			if filepath.Base(candidate) == sessionID+".jsonl" {
-				return candidate
+				return candidate, nil
 			}
 		}
 	}
-	return ""
+	return "", nil
 }
 
 func cindyClaudeProjectKey(workspace string) string {
@@ -206,15 +249,27 @@ func regularFile(file string) bool {
 // Cindy's embedded Codex home. Existing profiles store absolute Pi paths, so
 // the recursive lookup only runs for newer Codex-backed sessions.
 func cindyCodexTranscript(agentDir, sessionID string) string {
+	file, _ := cindyCodexTranscriptE(agentDir, sessionID)
+	return file
+}
+
+func cindyCodexTranscriptE(agentDir, sessionID string) (string, error) {
 	if sessionID == "" {
-		return ""
+		return "", nil
 	}
-	for _, file := range ListFiles(filepath.Join(agentDir, "codex-home", "sessions"), ".jsonl", true) {
+	files, err := ListFilesE(filepath.Join(agentDir, "codex-home", "sessions"), ".jsonl", true)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	for _, file := range files {
 		if strings.HasSuffix(filepath.Base(file), sessionID+".jsonl") {
-			return file
+			return file, nil
 		}
 	}
-	return ""
+	return "", nil
 }
 
 func filePathOrNil(file string) *string {

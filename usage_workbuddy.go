@@ -45,7 +45,11 @@ func scanWorkbuddySessionUsage(session SessionInfo) (*workbuddySessionUsage, err
 	}
 	tally := &SessionTally{}
 	records := []UsageRecord{}
-	WalkLines(ReadAllLines(*session.FilePath), func(obj map[string]any) {
+	lines, err := ReadAllLinesE(*session.FilePath)
+	if err != nil {
+		return nil, err
+	}
+	WalkLines(lines, func(obj map[string]any) {
 		timestamp := 0.0
 		if f, ok := AsNumber(obj["timestamp"]); ok {
 			timestamp = math.Floor(f)
