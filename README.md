@@ -9,7 +9,7 @@ session lists, transcripts and usage statistics (tokens, credits, USD cost).
 
 ## Status
 
-v0.3.7. Present: the output contract (`contract.go`, including transcript
+v0.3.9. Present: the output contract (`contract.go`, including transcript
 entries and tool calls), the agent registry, shared scan helpers, the 16
 session scanners, `ScanSessions` / `ScanSessionsDetailed` (per-agent failure
 reporting), usage extraction for the 12 agents with
