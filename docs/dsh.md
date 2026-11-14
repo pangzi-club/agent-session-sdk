@@ -36,9 +36,11 @@ this doc covers them only where DSH relies on a specific behavior.
       ...
 ```
 
-- **Two directory levels.** `ListDshSessionFiles` (`dsh.go:34`) lists project
+- **Two directory levels.** `ListDshSessionFiles` (`dsh.go`) lists project
   directories under `sessions/`, then session directories inside each, both
-  via `ListDirs` (dot-prefixed directories are skipped).
+  via `ListDirsE` (dot-prefixed directories are skipped). A missing `sessions/`
+  root is an empty store; any other listing error fails the DSH scan and is
+  reported per agent by `ScanSessionsDetailed`.
 - **Versioned file names, highest wins.** `pickDshSessionFile` (`dsh.go:49`)
   matches `^session\.v(\d+)\.jsonl\.zstd$` (`dshSessionFileRe`) among the
   non-recursive `.zstd` files of a session directory and keeps the highest
@@ -100,11 +102,12 @@ Synthetic, for shape only (shown decompressed):
 
 ## Session scanning → `SessionInfo`
 
-`ScanDsh` (`dsh.go:76`) runs `ScanDshFile` over `ListDshSessionFiles` with
+`ScanDsh` (`dsh.go`) runs `ScanDshFile` over the enumerated session files with
 `MapLimit` at `FileConcurrency` (16). Errors are **not** isolated per file:
 `stat`, read and decompression failures propagate, fail the whole batch, and
-`ScanSessions` reports DSH with zero sessions. A missing store directory is
-simply empty (`ListDirs`/`ListFiles` return nothing on error).
+`ScanSessionsDetailed` reports DSH as an `AgentScanFailure` (the legacy
+`ScanSessions` shows zero sessions). A missing store directory is simply
+empty.
 
 `ScanDshFile` (`dsh.go:92`):
 
@@ -262,12 +265,14 @@ consecutive events counts at most `ActiveGapCapMs` (120 000 ms), and
 
 ## Aggregation & cost
 
-- `ScanAllUsage` (`usage.go:45`) concatenates records in module order (DSH is
-  fifth) and merges sessions into an ordered map keyed by bare `sessionId`
-  (last-write-wins). Each session's `tokenUsage` is the 5-tuple
+- `ScanAllUsageDetailed` (`usage.go`) concatenates records in module order (DSH
+  is fifth) and merges sessions into an ordered map keyed by bare `sessionId`
+  (last-write-wins; the later module in aggregation order wins a shared id).
+  Each session's `tokenUsage` is the 5-tuple
   `[input, output, cacheRead, cacheWrite, 3]`, where `3` is the status flag and
   input excludes cache traffic; DSH's cache-write slot is always 0. `filePath`
-  (the `.zstd` path) is tildified against `home`.
+  (the `.zstd` path) is tildified against `home`. Failed modules are reported
+  as `AgentScanFailure` entries.
 - DSH is token-billed: `EstimateTokenCost` prices a record from model rates
   (`NormalizeModelId` → `LookupModelPrice`). `credits` is omitted. A null or
   unresolvable `model` prices to 0 with every token counted as unpriced.
@@ -319,6 +324,6 @@ consecutive events counts at most `ActiveGapCapMs` (120 000 ms), and
 | Generic fallback, content → entries, tool cards | `transcript.go` (`genericEntries`, `entriesFromContent`, `toolCall`, `cleanUserText`, `roleFromString`, `mapTimestamp`) |
 | Usage extraction | `usage_dsh.go` (`scanDshUsage`, `scanDshFileUsage`) |
 | Activity tally | `tally.go` (`SessionTally`) |
-| Aggregation | `usage.go` (`ScanAllUsage`, `ApplyInterval`, `MergeInterval`) |
-| Shared helpers | `shared.go` (`ListDirs`, `ListFiles`, `MapLimit`, `ParseLines`, `WalkLines`, `ContentToText`, `ToTitle`, `AsEpochMs`, `AsNumber`, `AsTokenCount`, `FloorMtimeMs`) |
+| Aggregation & failure reporting | `usage.go` (`ScanAllUsageDetailed`, `ApplyInterval`, `MergeInterval`), `registry.go` (`AgentScanFailure`) |
+| Shared helpers | `shared.go` (`ListDirsE`, `ListFilesE`, `MapLimit`, `ParseLines`, `WalkLines`, `ContentToText`, `ToTitle`, `AsEpochMs`, `AsNumber`, `AsTokenCount`, `FloorMtimeMs`) |
 | Output contract | `contract.go` (`SessionInfo`, `UsageRecord`, `Entry`, `ToolCall`) |

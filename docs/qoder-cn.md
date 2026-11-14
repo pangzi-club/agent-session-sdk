@@ -81,8 +81,8 @@ output estimate, credit pass-through, and the tally — is exactly as documented
 
 ## Aggregation & cost
 
-Same aggregation as `qoder` (`ScanAllUsage`, `usage.go:45`; module entry
-`usage.go:35`): the `tokenUsage` 5-tuple `[input, output, cacheRead, cacheWrite,
+Same aggregation as `qoder` (`ScanAllUsageDetailed`, `usage.go`; module entry in
+`usageModules`): the `tokenUsage` 5-tuple `[input, output, cacheRead, cacheWrite,
 3]`, credits kept per-record (not summed into the tuple).
 
 The **only** cost difference is the per-credit price in `creditPriceUSD`

@@ -51,8 +51,10 @@ the same loader applied to a different schema. Shared helpers
   `#` is what tells the shared loader to split a SQLite reference rather than open
   a JSONL file. A legacy session's `FilePath` is the plain `.json` path with no
   `#`.
-- The legacy scan is recursive (`ListFiles(..., ".json", true)`), descending into
-  every `<projectID>` subdirectory; dot-prefixed files are skipped.
+- The legacy scan is recursive (`ListFilesE(..., ".json", true)`), descending into
+  every `<projectID>` subdirectory; dot-prefixed files are skipped. A missing
+  storage tree is an empty store; any other listing or read error fails the
+  OpenCode scan (a legacy file that vanished after enumeration is skipped).
 
 ## Record format (SQLite + JSON)
 
@@ -146,9 +148,10 @@ object (unreadable / unparseable / non-object files are skipped).
 
 ### Database (`scanOpenCodeDatabase`, `opencode.go:37`)
 
-Open `opencode.db` read-only. **If the open or the query fails, return empty**
-(`nil, nil`) so the legacy results stand — a missing/half-created db is not fatal.
-The query computes size from the data columns:
+Open `opencode.db` read-only. **A missing db returns empty** (`nil, nil`) so
+the legacy results stand; a db that exists but cannot be opened or queried is
+an error that fails the `opencode` scan. The query computes size from the
+data columns:
 
 ```sql
 SELECT s.id, s.parent_id, s.directory, s.title, s.time_created, s.time_updated,
@@ -253,9 +256,11 @@ no `#` is signed as a plain file.
 
 ## Usage extraction → `UsageRecord[]`
 
-`scanOpenCodeUsage` (`usage_opencode.go:31`) opens `opencode.db`; **an unopenable
-db or a failed query yields an empty result, not an error** (no global status
-downgrade). `scanOpenCodeDb` (`usage_opencode.go:46`) builds a session list and
+`scanOpenCodeUsage` (`usage_opencode.go:31`) opens `opencode.db`; **a missing
+db yields an empty result** (OpenCode not installed ⇒ no data, no module
+failure), while a db that exists but cannot be opened or queried — including
+the session / message / part queries — is an error reported per agent.
+`scanOpenCodeDb` (`usage_opencode.go`) builds a session list and
 three event streams, then walks them per session in time order.
 
 ### Session list
@@ -324,12 +329,14 @@ nothing** (`sessionRecords` is appended only when non-empty).
 
 ## Aggregation & cost
 
-- `ScanAllUsage` (`usage.go:45`) concatenates records in module order (OpenCode is
-  `usage.go:32`) and merges sessions into an ordered map keyed by bare `sessionId`
-  (last-write-wins). Each session's `tokenUsage` is
+- `ScanAllUsageDetailed` (`usage.go`) concatenates records in module order and
+  merges sessions into an ordered map keyed by bare `sessionId`
+  (last-write-wins; the later module in aggregation order wins a shared id).
+  Each session's `tokenUsage` is
   `[input, output, cacheRead, cacheWrite, 3]` — input excludes cache traffic, `3`
   is the status flag. `filePath` is tildified against `home`. Sessions with no
-  records omit `tokenUsage`.
+  records omit `tokenUsage`. Failed modules are reported as `AgentScanFailure`
+  entries.
 - OpenCode is token-billed: `EstimateTokenCost` (`pricing.go:189`) prices a record
   from model rates (`NormalizeModelId` → `LookupModelPrice`). It is not in the
   credit-billed set, so `credits` is omitted. An unresolvable model prices the
@@ -379,7 +386,7 @@ nothing** (`sessionRecords` is appended only when non-empty).
 | Cache signature (db + `-wal`) | `transcript.go:111` (`transcriptSignature`, `fileSignature`); `transcriptFile:161` |
 | Usage extraction | `usage_opencode.go` (`scanOpenCodeUsage`, `scanOpenCodeDb`, `opencodeOrderOf`, `sqlToString`) |
 | Activity tally | `tally.go` (`SessionTally`) |
-| Aggregation | `usage.go:45` (`ScanAllUsage`, `ApplyInterval`, `MergeInterval`) |
+| Aggregation & failure reporting | `usage.go` (`ScanAllUsageDetailed`, `ApplyInterval`, `MergeInterval`), `registry.go` (`AgentScanFailure`) |
 | Pricing | `pricing.go` (`EstimateTokenCost`, `NormalizeModelId`, `LookupModelPrice`) |
 | SQLite access | `shared.go:534` (`OpenSQLite`), `shared.go:548` (`QueryMaps`) |
 | Shared helpers | `shared.go` (`ToTitle`, `AsEpochMs`, `AsNumber`, `AsTokenCount`, `FileSize`, `ListFiles`) |

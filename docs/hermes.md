@@ -263,9 +263,10 @@ the WAL invalidate the cached transcript. See [opencode.md](opencode.md).
 
 ## Usage extraction → `UsageRecord[]`
 
-`scanHermesUsage` (`usage_hermes.go:31`) opens `state.db`; **an unopenable db yields
-an empty result, not an error** (Hermes not installed ⇒ no data, no module
-failure). It then calls `ScanHermes` for the session list (a `ScanHermes` error
+`scanHermesUsage` (`usage_hermes.go:31`) opens `state.db`; **a missing db yields
+an empty result** (Hermes not installed ⇒ no data, no module failure), while a
+db that exists but cannot be opened or queried is an error reported per agent.
+It then calls `ScanHermes` for the session list (a `ScanHermes` error
 *does* propagate) and keeps only events whose `session_id` is in that filtered
 list (`sessionIDs`). Events are collected into an insertion-ordered map of
 `hermesEntry` per session.
@@ -331,12 +332,14 @@ only when non-empty).
 
 ## Aggregation & cost
 
-- `ScanAllUsage` (`usage.go:45`) concatenates records in module order (Hermes is
-  last, `usage.go:36`) and merges sessions into an ordered map keyed by bare
-  `sessionId` (last-write-wins). Each session's `tokenUsage` is
+- `ScanAllUsageDetailed` (`usage.go`) concatenates records in module order
+  (Hermes is last in `usageModules`) and merges sessions into an ordered map
+  keyed by bare `sessionId` (last-write-wins; the later module in aggregation
+  order wins a shared id). Each session's `tokenUsage` is
   `[input, output, cacheRead, cacheWrite, 3]` — input excludes cache traffic, `3`
   is the status flag. `filePath` is tildified against `home`
   (`~/.hermes/state.db#<id>`). Sessions with no records omit `tokenUsage`.
+  Failed modules are reported as `AgentScanFailure` entries.
 - Hermes is token-billed: it is **not** in `creditPriceUSD` (only `qoder` /
   `qoder-cn` are), so `EstimateTokenCost` (`pricing.go:189`) prices a record from
   model rates (`NormalizeModelId` → `LookupModelPrice`) and `credits` is omitted.
@@ -403,7 +406,7 @@ only when non-empty).
 | Cache signature (db + `-wal`) | `transcript.go:111` (`transcriptSignature`, `fileSignature`) |
 | Usage extraction | `usage_hermes.go` (`scanHermesUsage`, `hermesOrderOf`) |
 | Activity tally | `tally.go:36` (`SessionTally`) |
-| Aggregation | `usage.go:45` (`ScanAllUsage`, `ApplyInterval`, `MergeInterval`) |
+| Aggregation & failure reporting | `usage.go` (`ScanAllUsageDetailed`, `ApplyInterval`, `MergeInterval`), `registry.go` (`AgentScanFailure`) |
 | Pricing | `pricing.go:189` (`EstimateTokenCost`, `NormalizeModelId`, `LookupModelPrice`, `creditPriceUSD`) |
 | SQLite access | `shared.go:534` (`OpenSQLite`), `shared.go:548` (`QueryMaps`) |
 | Shared helpers | `shared.go` (`ToTitle`, `SecToMs`, `AsEpochMs`, `AsNumber`, `AsString`, `AsBoolTrue`, `AsTokenCount`, `FirstOr`) |

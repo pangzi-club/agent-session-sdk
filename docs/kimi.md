@@ -50,7 +50,10 @@ helpers (`entriesFromContent`, `toolCall`, `ToTitle`) are documented in
   used to resolve workspace paths. A project directory whose name is not a known
   hash is skipped entirely; a missing or unparseable `kimi.json` yields an empty
   map, so **every** session is skipped.
-- Dot-prefixed directories are skipped at both levels (`ListDirs`, `shared.go:371`).
+- Dot-prefixed directories are skipped at both levels (`ListDirsE`,
+  `shared.go`). A missing `sessions/` root is an empty store; any other
+  listing error fails the whole `ScanKimi` call and is reported per agent by
+  `ScanSessionsDetailed`.
 
 > Note: `Sha256Hex` (`shared.go:174`) is the *gemini* reverse-lookup hash, not
 > kimi's. Kimi uses `Md5Hex` only.
@@ -121,14 +124,12 @@ the full block table and tool-card rules.
 
 ## Session scanning → `SessionInfo`
 
-`ScanKimi` (`kimi.go:15`) loads the workspace map, lists `sessions/`, and scans
-each project directory in parallel (`MapLimit`, `FileConcurrency` = 16). Per
-project directory:
-
-1. `workspace = workspaces[base(projectDir)]`. If the hash is unknown, the whole
-   directory is skipped (`return nil, nil`).
-2. List its session subdirectories and scan each via `scanKimiSession`
-   (`kimi.go:70`), again bounded by `FileConcurrency`.
+`ScanKimi` (`kimi.go:15`) loads the workspace map, lists `sessions/`, and first
+enumerates every `(projectDir → sessionDir)` pair whose project hash is known;
+`workspace = workspaces[base(projectDir)]` — an unknown hash skips the whole
+directory. The flattened pairs are then scanned by one bounded pool
+(`MapLimit`, `FileConcurrency` = 16, sharing the process-wide file-work
+budget). Per pair, `scanKimiSession` (`kimi.go`) derives:
 
 `scanKimiSession` derives each field:
 
@@ -223,11 +224,11 @@ but with no usage records there is nothing to price.)
   scan yields zero entries without error. A wire scan error short-circuits the
   fallback.
 - **`TurnBegin` is always a user turn**, independent of `payload.role`.
-- **Head reads are bounded to 64 KiB** but `ReadHeadLines` loads the file then
-  truncates (not a streaming scan). A wire/context file that exists but fails to
+- **Head reads are bounded to 64 KiB** — `ReadHeadLines` reads at most that
+  many bytes from the file. A wire/context file that exists but fails to
   read returns an error that propagates through `MapLimit`, failing the whole
-  `ScanKimi` call — `ScanSessions` then reports no kimi sessions
-  (`shared.go:434` comment).
+  `ScanKimi` call — `ScanSessionsDetailed` then reports the kimi failure
+  while other agents keep their results.
 - **`sizeBytes` sums wire + context**, and `filePath` points at wire when present
   (so the transcript cache watches the wire file's size/mtime).
 - **No usage data**, no cost, no `tokenUsage`.
@@ -242,6 +243,6 @@ but with no usage records there is nothing to price.)
 | Generic context entries | `transcript.go` (`genericEntries`, `messageRole`, `messageContent`) |
 | Content → entries, tool cards, cleaning | `transcript.go` (`entriesFromContent`, `toolCall`, `cleanUserText`) |
 | Timestamp mapping | `transcript.go` (`mapTimestamp`); `shared.go` (`SecToMs`, `AsEpochMs`) |
-| Hashing / title / head reads | `shared.go` (`Md5Hex`, `ToTitle`, `ContentToText`, `ReadHeadLines`, `ParseLines`, `FloorMtimeMs`, `ListDirs`, `MapLimit`) |
+| Hashing / title / head reads | `shared.go` (`Md5Hex`, `ToTitle`, `ContentToText`, `ReadHeadLines`, `ParseLines`, `FloorMtimeMs`, `ListDirsE`, `MapLimit`) |
 | Usage aggregation (kimi absent) | `usage.go` (`usageModules`, `ScanAllUsage`) |
 | Output contract | `contract.go` (`SessionInfo`, `Entry`, `ToolCall`) |

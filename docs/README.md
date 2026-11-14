@@ -54,3 +54,19 @@ usage module (`usage.go`); gemini, cursor, kimi and kimi-code have none.
 | `hermes` | `.hermes` | `parseHermesTranscript` | yes | [hermes.md](hermes.md) |
 
 `qwen` is detected by consumers but never scanned, so it has no doc.
+
+## Error model (applies to every agent)
+
+- A store that is **absent** (agent not installed) scans as empty — never a
+  failure.
+- A store that exists but cannot be read (permissions, I/O errors, a corrupt
+  or locked database, `ENOTDIR` paths) fails that agent's scan. The detailed
+  APIs surface this: `ScanSessionsDetailed` and `ScanAllUsageDetailed` return
+  `AgentScanFailure{AgentID, AgentName, Directory, Err}` next to the
+  successful agents' results; the legacy `ScanSessions` / `ScanAllUsage`
+  wrappers keep the old empty-on-error behavior.
+- The CLI prints successful agents' JSON on stdout, lists failed agents on
+  stderr (`agent scan failed: …`) and exits `1`; usage errors exit `2`.
+- Scans share a process-wide file-work budget (`FileConcurrency` = 16) across
+  every agent, and JSONL usage extraction streams files instead of loading
+  them whole.

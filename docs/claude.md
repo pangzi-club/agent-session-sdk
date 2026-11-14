@@ -46,7 +46,9 @@ source map.
 - **`sessions-index.json` is optional.** When it exists and yields entries, the
   scanner uses it and never opens the JSONL files. Otherwise it falls back to a
   streaming scan of each file.
-- Dot-prefixed project directories are skipped (`ListDirs`).
+- Dot-prefixed project directories are skipped (`ListDirsE`). A missing
+  `projects/` directory is an empty store; any other listing error fails the
+  whole `claude` scan and is reported per agent by `ScanSessionsDetailed`.
 
 ## Record format (JSONL)
 
@@ -99,9 +101,11 @@ Synthetic, for shape only:
 
 ## Session scanning → `SessionInfo`
 
-`ScanClaude` → `scanClaudeProjectsDir` lists `projects/` and scans each project
-directory in parallel. Per directory (`scanClaudeProjectDir`, `claude.go:46`)
-there are two paths.
+`ScanClaude` → `scanClaudeProjectsDir` lists `projects/`, then first visits every
+project directory sequentially (`claudeProjectSessions`, `claude.go`) to collect
+index entries and fallback files, and finally scans all collected files in one
+bounded pool (`MapLimit`, `FileConcurrency` = 16, sharing the process-wide
+file-work budget). Per directory there are two paths.
 
 ### Fast path: `sessions-index.json`
 
@@ -204,8 +208,9 @@ from `input` / `arguments` / `args` (or a JSON-string `arguments`). The card:
 ## Usage extraction → `UsageRecord[]`
 
 `scanClaudeUsage` (`usage_claude.go:14`) reuses `ScanClaude` for the session list,
-then reads every `*.jsonl` under each project directory in full
-(`scanClaudeFileUsage`, `usage_claude.go:40`). Per line, in order:
+then streams every `*.jsonl` under each project directory line by line
+(`WalkJSONLFile` — malformed lines are skipped, one record is capped at 32 MiB,
+open/read failures fail the module). Per line, in order:
 
 1. **Skip sidechains.** `isSidechain == true` (subagent / Task tool requests) is
    ignored entirely — not counted toward main-session usage.
@@ -252,11 +257,14 @@ to `ToolCallsByName`.
 
 ## Aggregation & cost
 
-- `ScanAllUsage` (`usage.go:45`) concatenates records in module order and merges
-  sessions into an ordered map keyed by bare `sessionId` (last-write-wins). Each
-  session's `tokenUsage` is the 5-tuple
+- `ScanAllUsageDetailed` (`usage.go`) concatenates records in module order and
+  merges sessions into an ordered map keyed by bare `sessionId`
+  (last-write-wins; the later module in aggregation order wins a shared id).
+  Each session's `tokenUsage` is the 5-tuple
   `[input, output, cacheRead, cacheWrite, 3]`, where `3` is the status flag and
-  input excludes cache traffic. `filePath` is tildified against `home`.
+  input excludes cache traffic. `filePath` is tildified against `home`. Failed
+  modules are dropped from the aggregation and reported as `AgentScanFailure`
+  entries; the legacy `ScanAllUsage` keeps the old empty-on-error behavior.
 - Claude is token-billed: `EstimateTokenCost` prices a record from model rates
   (`NormalizeModelId` → `LookupModelPrice`). `credits` is omitted. `input_tokens`
   is the non-cached input; cache reads/writes are priced separately.
@@ -283,11 +291,11 @@ to `ToolCallsByName`.
 | Topic | Location |
 |---|---|
 | Registry entry | `registry.go:22` |
-| Session scan (index + fallback) | `claude.go` (`ScanClaude`, `scanClaudeProjectDir`, `scanClaudeFile`) |
+| Session scan (index + fallback) | `claude.go` (`ScanClaude`, `scanClaudeProjectsDir`, `claudeProjectSessions`, `scanClaudeFile`) |
 | Transcript loader | `transcript_claude.go` (`parseClaudeTranscript`) |
 | Content → entries, tool cards, cleaning | `transcript.go` (`entriesFromContent`, `toolCall`, `cleanUserText`) |
-| Usage extraction | `usage_claude.go` (`scanClaudeUsage`, `scanClaudeFileUsage`, `claudeIsUserPrompt`) |
+| Usage extraction | `usage_claude.go` (`scanClaudeUsage`, `scanClaudeUsageRecords`, `claudeIsUserPrompt`) |
 | Activity tally | `tally.go` (`SessionTally`) |
-| Aggregation | `usage.go` (`ScanAllUsage`, `ApplyInterval`, `MergeInterval`) |
+| Aggregation & failure reporting | `usage.go` (`ScanAllUsageDetailed`, `ApplyInterval`, `MergeInterval`), `registry.go` (`AgentScanFailure`, `ScanSessionsDetailed`) |
 | Shared helpers | `shared.go` (`ToTitle`, `DecodePathDirName`, `SkillOfToolUse`, `AsEpochMs`, `AsTimestamp`, `AsTokenCount`) |
 | Output contract | `contract.go` (`SessionInfo`, `UsageRecord`, `Entry`, `ToolCall`) |

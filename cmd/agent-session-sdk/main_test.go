@@ -76,6 +76,122 @@ func TestRunTranscriptUnknownSessionStillSaysNotFound(t *testing.T) {
 	}
 }
 
+func TestRunSessionsPrintsJSONPerAgent(t *testing.T) {
+	home := t.TempDir()
+	writeCLICodexFixture(t, home)
+
+	exitCode, stdout, stderr := captureRun(t, []string{"sessions", "--home", home})
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr: %s", exitCode, stderr)
+	}
+	var results []struct {
+		AgentID  string `json:"agentId"`
+		Sessions []struct {
+			ID string `json:"id"`
+		} `json:"sessions"`
+		CanDelete *bool `json:"canDeleteSessions"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &results); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\n%s", err, stdout)
+	}
+	var codexSeen bool
+	for _, result := range results {
+		if result.CanDelete == nil {
+			t.Fatalf("agent %s omitted canDeleteSessions", result.AgentID)
+		}
+		if result.AgentID == "codex" {
+			codexSeen = true
+			if len(result.Sessions) != 1 || result.Sessions[0].ID != "rollout-cli-error-report" {
+				t.Fatalf("codex sessions = %+v", result.Sessions)
+			}
+		}
+	}
+	if !codexSeen {
+		t.Fatal("codex missing from session results")
+	}
+}
+
+func TestRunSearchUsesSessionIndex(t *testing.T) {
+	home := t.TempDir()
+	writeCLICodexFixture(t, home)
+
+	exitCode, stdout, stderr := captureRun(t, []string{"search", "--home", home, "rollout", "--limit", "5"})
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr: %s", exitCode, stderr)
+	}
+	var results []struct {
+		AgentID  string `json:"agentId"`
+		Sessions []struct {
+			ID string `json:"id"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &results); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\n%s", err, stdout)
+	}
+	found := false
+	for _, result := range results {
+		for _, session := range result.Sessions {
+			if session.ID == "rollout-cli-error-report" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("search results missed the indexed session: %s", stdout)
+	}
+}
+
+func TestRunUsageCostAddsCostFields(t *testing.T) {
+	home := t.TempDir()
+	writeCLICodexFixture(t, home)
+
+	exitCode, stdout, stderr := captureRun(t, []string{"usage", "--home", home, "--cost"})
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr: %s", exitCode, stderr)
+	}
+	var payload struct {
+		Records []struct {
+			CostUsd   *float64 `json:"costUsd"`
+			AgentID   string   `json:"agentId"`
+			SessionID string   `json:"sessionId"`
+		} `json:"records"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\n%s", err, stdout)
+	}
+	if len(payload.Records) != 1 || payload.Records[0].CostUsd == nil {
+		t.Fatalf("cost records = %+v, want one record with costUsd", payload.Records)
+	}
+}
+
+func TestRunHelpAndFlagErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		args     []string
+		exitCode int
+		stderr   string
+	}{
+		{name: "help", args: []string{"help"}, exitCode: 0},
+		{name: "no args", args: nil, exitCode: 2},
+		{name: "unknown subcommand", args: []string{"frobnicate"}, exitCode: 2, stderr: "unknown subcommand"},
+		{name: "unknown agent", args: []string{"sessions", "--agent", "nope"}, exitCode: 2, stderr: "unknown agent: nope"},
+		{name: "missing search query", args: []string{"search"}, exitCode: 2, stderr: "search needs <query>"},
+		{name: "bad flag", args: []string{"sessions", "--definitely-not-a-flag"}, exitCode: 2},
+		{name: "negative limit", args: []string{"search", "--limit", "-1", "q"}, exitCode: 2, stderr: "cannot be negative"},
+		{name: "index on usage", args: []string{"usage", "--index"}, exitCode: 2, stderr: "--index is valid for sessions and transcript only"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			exitCode, _, stderr := captureRun(t, tc.args)
+			if exitCode != tc.exitCode {
+				t.Fatalf("exit code = %d, want %d; stderr: %s", exitCode, tc.exitCode, stderr)
+			}
+			if tc.stderr != "" && !strings.Contains(stderr, tc.stderr) {
+				t.Fatalf("stderr = %q, want it to contain %q", stderr, tc.stderr)
+			}
+		})
+	}
+}
+
 func captureRun(t *testing.T, args []string) (int, string, string) {
 	t.Helper()
 	dir := t.TempDir()

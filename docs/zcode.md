@@ -249,9 +249,11 @@ This is where zcode diverges most from `opencode`. `scanZcodeUsage`
 (prompts), `tool_usage` (tools) joined to `part` (skill names), and `model_usage`
 (records) — merges three event kinds per session, and walks them in time order.
 
-**Degradation.** An unopenable db yields an **empty result, not an error** (no
-global status downgrade) — the opposite of `ScanZcode`, which errors. Each later
-query failure degrades gracefully (noted per query below).
+**Degradation.** A **missing** db (zcode not installed) yields an empty
+result, not an error; a db that exists but cannot be opened (corrupt, locked)
+is an error. The session-list query failing is an error, but the later
+per-table queries (message / part / tool_usage / model_usage) degrade to
+"sessions without records", so older schemas with missing tables still scan.
 
 ### Session list
 
@@ -385,13 +387,14 @@ at `ActiveGapCapMs` (120 000 ms) so idle time never inflates `ActiveMs`; see
 
 ## Aggregation & cost
 
-- `ScanAllUsage` (`usage.go:45`) concatenates records in module order — zcode is
-  `usage.go:28`, ahead of opencode (`usage.go:32`) — and merges sessions into an
-  ordered map keyed by bare `sessionId` (last-write-wins). Each session's
+- `ScanAllUsageDetailed` (`usage.go`) concatenates records in module order —
+  zcode is in `usageModules`, ahead of opencode — and merges sessions into an
+  ordered map keyed by bare `sessionId` (last-write-wins; the later module in
+  aggregation order wins a shared id). Each session's
   `tokenUsage` is `[input, output, cacheRead, cacheWrite, 3]`, where `input` is the
   (possibly negative) sum of record `InputTokens` and `3` is the status flag.
   `filePath` is tildified against `home`. Sessions with no records omit
-  `tokenUsage`.
+  `tokenUsage`. Failed modules are reported as `AgentScanFailure` entries.
 - zcode is token-billed: `EstimateTokenCost` (`pricing.go:189`) prices a record from
   model rates (`NormalizeModelId` → `LookupModelPrice`). It is not in the
   credit-billed set (only `qoder` / `qoder-cn`), so `credits` is omitted. An
@@ -429,10 +432,10 @@ at `ActiveGapCapMs` (120 000 ms) so idle time never inflates `ActiveMs`; see
   `WHERE task_type IS NULL OR task_type = 'interactive'`. A schema lacking
   `task_type` would still list sessions in the scanner but fail the usage query
   (empty result).
-- **Open-failure asymmetry.** `ScanZcode` returns an error on db open/query failure
-  (the caller treats it as no sessions); `scanZcodeUsage` returns empty (no error,
-  no status downgrade). Usage query failures after the session list keep sessions
-  but drop records.
+- **Open-failure asymmetry.** `ScanZcode` returns db open/query errors (a
+  missing db maps to an empty agent via `os.ErrNotExist`; anything else becomes
+  an `AgentScanFailure`). `scanZcodeUsage` returns empty only for a missing db;
+  usage query failures after the session list keep sessions but drop records.
 - **`sizeBytes` is the rollout file's real size** (`cli/rollout/model-io-<id>.jsonl`),
   not a data-length sum (opencode) and not `0`; usage sessions use `0`. The rollout
   file is never parsed.
@@ -458,7 +461,7 @@ at `ActiveGapCapMs` (120 000 ms) so idle time never inflates `ActiveMs`; see
 | Usage extraction | `usage_zcode.go:36` (`scanZcodeUsage`, `zcodeOrderOf:217`, `numberPtr:224`) |
 | Negative input subtraction | `usage_zcode.go:196`; `contract.go:11`; `pricing.go:24` |
 | Activity tally | `tally.go:36` (`SessionTally`, `AddEvent:44`) |
-| Aggregation | `usage.go:45` (`ScanAllUsage`, `ApplyInterval:108`, `MergeInterval:126`) |
+| Aggregation & failure reporting | `usage.go` (`ScanAllUsageDetailed`, `ApplyInterval`, `MergeInterval`), `registry.go` (`AgentScanFailure`) |
 | Pricing | `pricing.go:189` (`EstimateTokenCost`, `NormalizeModelId:95`, `LookupModelPrice:117`) |
 | SQLite access | `shared.go:534` (`OpenSQLite`), `shared.go:548` (`QueryMaps`) |
 | Shared helpers | `shared.go` (`ToTitle:211`, `AsEpochMs:129`, `AsNumber:44`, `AsTokenCount:152`, `AsString:36`, `IsStr:75`, `FileSize:358`, `FirstOr:108`) |

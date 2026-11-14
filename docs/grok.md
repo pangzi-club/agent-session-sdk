@@ -41,17 +41,20 @@ glance → on-disk layout → record format → session scanning → transcript 
       ...
 ```
 
-- **Two levels under `sessions/`.** `ListGrokSessionDirs` (`grok.go:36`)
-  enumerates `sessions/<projectDir>/<sessionDir>` with `ListDirs` twice
-  (`shared.go:371`, which skips dot-prefixed directories). The project directory
-  name is the URL-encoded cwd; the session directory name is a uuid.
+- **Two levels under `sessions/`.** `ListGrokSessionDirs` (`grok.go`)
+  enumerates `sessions/<projectDir>/<sessionDir>` with `ListDirsE` twice
+  (which skips dot-prefixed directories). A missing `sessions/` root is an
+  empty store; any other listing error fails the Grok scan and is reported per
+  agent by `ScanSessionsDetailed`. The project directory name is the
+  URL-encoded cwd; the session directory name is a uuid.
 - **`summary.json` is the metadata source.** A directory without a readable,
-  parseable `summary.json` is not a session and is skipped.
+  parseable `summary.json` is not a session: a *missing* file skips the
+  directory, while any other read error fails the batch.
 - **`updates.jsonl` is the body.** The scanner only stats it for `sizeBytes` and
   records it as `filePath`; the usage extractor reads it later. The generic
   transcript loader is pointed at it too, but emits nothing (see below).
-- The usage scan reuses `ListGrokSessionDirs` and `ScanGrokSessionDir`, so the
-  layout rules live in one place.
+- The usage scan reuses the same directory enumeration and
+  `ScanGrokSessionDir`, so the layout rules live in one place.
 
 ## Record format
 
@@ -117,8 +120,9 @@ nested under `params.update`); the SDK reads only those shown.
 with `MapLimit` (`shared.go:411`) at `FileConcurrency` (16); results keep input
 order and any error fails the whole batch. `ScanGrokSessionDir` (`grok.go:45`):
 
-1. Read `summary.json`; a read error or a JSON parse error → return nil (the
-   directory is skipped, not fatal).
+1. Read `summary.json`; a *missing* file or a JSON parse error → return nil (the
+   directory is skipped, not fatal). Any other read error (permissions, I/O)
+   fails the batch.
 2. `id` = `info.id`, else `basename(dir)` (the uuid directory name).
 3. `workspace` = `info.cwd`, else `url.PathUnescape(basename(parentDir))`. **A
    decode error is returned as an error**, which fails the batch and wipes out
@@ -185,12 +189,13 @@ it is why the usage path uses its own `grokEventTimestamp` instead.
 
 ## Usage extraction → `UsageRecord[]`
 
-`scanGrokUsage` (`usage_grok.go:17`) maps `scanGrokSessionUsage` over
-`ListGrokSessionDirs` at `FileConcurrency` (16). `scanGrokSessionUsage`
+`scanGrokUsage` (`usage_grok.go:17`) maps `scanGrokSessionUsage` over the
+session directories at `FileConcurrency` (16). `scanGrokSessionUsage`
 (`usage_grok.go:43`) first calls `ScanGrokSessionDir`; a nil session (no
-`summary.json`) is skipped, while an error fails the batch. It then reads
-`updates.jsonl` in full (`ReadAllLines`, read failure → empty) and walks each
-line with `WalkLines`:
+`summary.json`) is skipped, while an error fails the batch. It then streams
+`updates.jsonl` with `WalkJSONLFile` — a *missing* file is tolerated (the
+session keeps its list entry with no records), other read errors fail the
+batch. Per record:
 
 1. `params = obj.params`, `update = params.update`; no `update` → skip.
 2. **Timestamp gate.** `grokEventTimestamp(obj, params)` (`usage_grok.go:101`):
@@ -263,8 +268,10 @@ drains the rest. The interval carries `UserPrompts`, `ToolCalls`,
 - **A bad directory wipes the agent.** A `url.PathUnescape` failure on the
   project dir name, or an `os.Stat` failure on the session dir, returns an error
   that fails the whole batch (scan and usage alike).
-- **No `summary.json` → not a session.** Unreadable or unparsable summaries are
-  skipped silently; the directory contributes nothing.
+- **No `summary.json` → not a session.** Missing or unparsable summaries are
+  skipped silently; the directory contributes nothing. A session directory with
+  `summary.json` but no `updates.jsonl` still appears in the session list, just
+  without usage records.
 - **Timestamps fall back to the directory mtime**, not the file mtime, and both
   `createdAt` and `updatedAt` share that fallback.
 - **Model tie-break is lexicographic**, chosen to make unordered map iteration
@@ -276,12 +283,12 @@ drains the rest. The interval carries `UserPrompts`, `ToolCalls`,
 | Topic | Location |
 |---|---|
 | Registry entry | `registry.go:31` |
-| Session scan | `grok.go` (`ScanGrok`, `ListGrokSessionDirs`, `ScanGrokSessionDir`) |
+| Session scan | `grok.go` (`ScanGrok`, `listGrokSessionDirsE`, `ListGrokSessionDirs`, `ScanGrokSessionDir`) |
 | Transcript loader | `transcript_generic.go` (`parseGenericTranscript`) |
 | Generic record → entries | `transcript.go` (`genericEntries`, `messageRole`, `messageContent`, `mapTimestamp`, `entriesFromContent`, `toolCall`, `cleanUserText`) |
 | Usage extraction | `usage_grok.go` (`scanGrokUsage`, `scanGrokSessionUsage`, `grokEventTimestamp`, `pickGrokModel`) |
 | Activity tally | `tally.go` (`SessionTally`) |
-| Aggregation | `usage.go` (`ScanAllUsage`, `ApplyInterval`, `MergeInterval`) |
+| Aggregation & failure reporting | `usage.go` (`ScanAllUsageDetailed`, `ApplyInterval`, `MergeInterval`), `registry.go` (`AgentScanFailure`) |
 | Pricing | `pricing.go` (`EstimateTokenCost`, `NormalizeModelId`, `LookupModelPrice`, `modelAliases`) |
-| Shared helpers | `shared.go` (`ToTitle`, `AsEpochMs`, `AsNumber`, `AsTokenCount`, `FileSize`, `FloorMtimeMs`, `ListDirs`, `MapLimit`, `ReadAllLines`, `WalkLines`) |
+| Shared helpers | `shared.go` (`ToTitle`, `AsEpochMs`, `AsNumber`, `AsTokenCount`, `FileSize`, `FloorMtimeMs`, `ListDirsE`, `MapLimit`, `WalkJSONLFile`) |
 | Output contract | `contract.go` (`SessionInfo`, `UsageRecord`, `Entry`, `ToolCall`) |

@@ -80,12 +80,15 @@ Synthetic, for shape only:
 
 `ScanGemini` (`gemini.go:45`):
 
-1. List `tmp/`, keep directories matching `geminiHashRe`. None → return empty.
+1. List `tmp/`, keep directories matching `geminiHashRe`. A missing `tmp/` is
+   an empty store; another listing error fails the Gemini scan. No hash
+   directories → return empty.
 2. Reverse-look-up workspaces (`resolveGeminiWorkspaces`). If **no** hash
    resolves, return empty immediately — the `logs.json` files are never read.
 3. For each hash directory with a resolved workspace: `stat` then read
-   `logs.json`, `json.Unmarshal` it, and require a JSON array. Any failure
-   (stat / read / parse / not-an-array) skips that directory, not the scan.
+   `logs.json`, `json.Unmarshal` it, and require a JSON array. A *missing*
+   file or a parse failure / non-array skips that directory; any other stat or
+   read error fails the whole scan.
 4. Walk the records, aggregating per `sessionId` into an insertion-ordered map
    (`geminiAgg`):
    - `sessionId` must be a string (`AsString`); a non-string value skips the
@@ -211,5 +214,5 @@ appear in a gemini transcript.
 | Transcript loader | `transcript_gemini.go` (`parseGeminiTranscript`) |
 | Content → entries, cleaning | `transcript.go` (`entriesFromContent`, `cleanUserText`, `mapTimestamp`) |
 | Title normalization | `shared.go` (`ToTitle`) |
-| Usage aggregation (gemini absent) | `usage.go` (`usageModules`, `ScanAllUsage`) |
+| Usage aggregation (gemini absent) | `usage.go` (`usageModules`, `ScanAllUsageDetailed`) |
 | Output contract | `contract.go` (`SessionInfo`, `Entry`, `ToolCall`) |

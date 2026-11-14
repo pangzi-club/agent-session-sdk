@@ -35,10 +35,12 @@ this doc covers them only where Pi relies on a specific behavior.
 ```
 
 - **Session root is `agent/sessions`, scanned recursively.** `ScanPi` calls
-  `ListFiles(agentDir/agent/sessions, ".jsonl", true)` (`shared.go:387`): every
+  `ListFilesE(agentDir/agent/sessions, ".jsonl", true)` (`shared.go`): every
   regular `.jsonl` file at any depth is a candidate. Dot-prefixed *files* are
   skipped, but the recursion descends into every subdirectory, including
-  dot-prefixed ones.
+  dot-prefixed ones. A missing root is an empty store; any other listing error
+  (including inside a nested directory) fails the Pi scan and is reported per
+  agent by `ScanSessionsDetailed`.
 - **Project directory names are encoded paths, but the SDK never decodes
   them.** They follow the same `--…--` convention as Claude, yet `pi.go` has no
   `DecodePathDirName` call site (only `claude.go` and `qoder.go` call it, despite
@@ -51,9 +53,9 @@ this doc covers them only where Pi relies on a specific behavior.
 ## Record format (JSONL)
 
 Each line is one JSON object. Blank lines and lines that fail to parse are
-silently skipped (`ParseLines` / `WalkLines`). The session list parses only the
-first 64 KiB; the transcript and usage paths read the whole file. The fields
-the SDK reads:
+silently skipped (`ParseLines` / `WalkJSONLFile`). The session list parses only
+the first 64 KiB; the transcript and usage paths stream the whole file. The
+fields the SDK reads:
 
 | Field | Type | Meaning |
 |---|---|---|
@@ -101,17 +103,18 @@ Synthetic, for shape only:
 ## Session scanning → `SessionInfo`
 
 `ScanPi` (`pi.go:15`) lists the files recursively, then runs `ScanPiFile` over
-them with `MapLimit` at `FileConcurrency` (16). Errors are **not** isolated per
-file: `MapLimit` fails the whole batch on the first error, `ScanPi` returns it,
-and `ScanSessions` reports Pi with zero sessions. A single unreadable file
-wipes out the entire agent list.
+them with `MapLimit` at `FileConcurrency` (16, sharing the process-wide
+file-work budget). Errors are **not** isolated per file: `MapLimit` fails the
+whole batch on the first error, `ScanPi` returns it, and `ScanSessionsDetailed`
+reports Pi as an `AgentScanFailure` while other agents keep their results. The
+legacy `ScanSessions` shows an empty list for the failed agent.
 
 `ScanPiFile` (`pi.go:31`):
 
 1. `os.Stat` for size/mtime, then `ReadHeadLines(file, 64*1024)`
-   (`shared.go:435`). Only the first 64 KiB is parsed; the last line may be cut
-   mid-JSON and is then skipped by the parser. (The helper actually reads the
-   whole file into memory before truncating — the cap bounds parsing, not I/O.)
+   (`shared.go`). Only the first 64 KiB is read and parsed; the last line may
+   be cut mid-JSON and is then skipped by the parser (the cap bounds both I/O
+   and parsing).
 2. **Metadata pass** — `ParseLines` finds the first `type == "session"` line
    whose numeric `version` equals exactly `3` and whose `cwd` is a non-empty
    string; `createdAt = AsEpochMs(timestamp)`. No such line in the head → the
@@ -184,14 +187,14 @@ Pi-specific notes:
 ## Usage extraction → `UsageRecord[]`
 
 `scanPiUsage` (`usage_pi.go:13`) re-enumerates the same files with the same
-recursive `ListFiles` call and runs `scanPiFileUsage` at concurrency 16. Per
+recursive `ListFilesE` call and runs `scanPiFileUsage` at concurrency 16. Per
 file (`usage_pi.go:36`):
 
 1. **Session gate.** `ScanPiFile` must return a session (valid version-3
    header within the first 64 KiB); otherwise the file contributes nothing.
-2. `ReadAllLines` reads the whole file; a read failure returns empty lines,
-   not an error.
-3. `WalkLines` visits every parseable line; only `type == "message"` proceeds.
+2. `WalkJSONLFile` streams the file line by line; open/read failures fail the
+   module (skipped malformed lines are still tolerated). Only
+   `type == "message"` records proceed.
 4. **Timestamp.** Prefer `message.timestamp` when it is a number `> 0` (epoch
    ms); otherwise fall back to `AsEpochMs(line.timestamp)` (number or RFC3339
    string). A *string* `message.timestamp` is ignored here — an asymmetry with
@@ -244,10 +247,10 @@ consecutive events counts at most `ActiveGapCapMs` (120 000 ms), and
   file invisible (contrast DSH, which accepts a minimum version).
 - **64 KiB head.** A header or first user message beyond the head means no
   session or no title; `sizeBytes` still reports the full file size, and
-  `ReadHeadLines` loads the whole file before truncating.
+  `ReadHeadLines` reads at most 64 KiB of it.
 - **One bad file zeroes the agent.** `stat`/read errors propagate through
-  `MapLimit` and fail the whole Pi scan; `ScanSessions` then reports an empty
-  list. A missing store directory, by contrast, is simply empty.
+  `MapLimit` and fail the whole Pi scan; `ScanSessionsDetailed` reports the
+  failure per agent. A missing store directory, by contrast, is simply empty.
 - **Timestamp asymmetry.** Usage honors `message.timestamp` only when numeric;
   the transcript also accepts it as an RFC3339 string. Usage skips lines whose
   resolved timestamp is `0`; the transcript emits them with timestamp `0`.
@@ -269,6 +272,6 @@ consecutive events counts at most `ActiveGapCapMs` (120 000 ms), and
 | Content → entries, tool cards, cleaning | `transcript.go` (`entriesFromContent`, `toolFromBlock`, `toolCall`, `cleanUserText`, `roleFromString`, `mapTimestamp`) |
 | Usage extraction | `usage_pi.go` (`scanPiUsage`, `scanPiFileUsage`) |
 | Activity tally | `tally.go` (`SessionTally`) |
-| Aggregation | `usage.go` (`ScanAllUsage`, `ApplyInterval`, `MergeInterval`) |
-| Shared helpers | `shared.go` (`ListFiles`, `ReadHeadLines`, `ParseLines`, `WalkLines`, `ReadAllLines`, `MapLimit`, `ContentToText`, `ToTitle`, `AsEpochMs`, `AsTokenCount`, `FloorMtimeMs`) |
+| Aggregation & failure reporting | `usage.go` (`ScanAllUsageDetailed`, `ApplyInterval`, `MergeInterval`), `registry.go` (`AgentScanFailure`) |
+| Shared helpers | `shared.go` (`ListFilesE`, `ReadHeadLines`, `ParseLines`, `WalkJSONLFile`, `MapLimit`, `ContentToText`, `ToTitle`, `AsEpochMs`, `AsTokenCount`, `FloorMtimeMs`) |
 | Output contract | `contract.go` (`SessionInfo`, `UsageRecord`, `Entry`, `ToolCall`) |

@@ -11,8 +11,10 @@ session lists, transcripts and usage statistics (tokens, credits, USD cost).
 
 v0.3.7. Present: the output contract (`contract.go`, including transcript
 entries and tool calls), the agent registry, shared scan helpers, the 16
-session scanners, `ScanSessions`, usage extraction for the 12 agents with
-local usage data, `ScanAllUsage`, `Summarize`, transcript loading
+session scanners, `ScanSessions` / `ScanSessionsDetailed` (per-agent failure
+reporting), usage extraction for the 12 agents with
+local usage data, `ScanAllUsage` / `ScanAllUsageDetailed`, `Summarize`,
+transcript loading
 (`LoadTranscript`, `Cache`), pricing (`EstimateTokenCost`, `NormalizeModelId`,
 `LookupModelPrice`, embedded model-prices.json), the incremental SQLite session
 index and the CLI at `cmd/agent-session-sdk`.
@@ -37,15 +39,25 @@ go install github.com/pangzi-club/agent-session-sdk/cmd/agent-session-sdk@v0.1.0
 import agentsession "github.com/pangzi-club/agent-session-sdk"
 ```
 
-Session lists — one `SessionScanResult` per agent, scanned in parallel:
+Session lists — one `SessionScanResult` per agent, scanned in parallel. A
+failing agent contributes no sessions; `ScanSessionsDetailed` additionally
+returns per-agent failures so an unreadable store is distinguishable from an
+empty one (a store that is simply absent never counts as a failure):
 
 ```go
-for _, result := range agentsession.ScanSessions(home) {
+report := agentsession.ScanSessionsDetailed(home)
+for _, failure := range report.Failures {
+    log.Printf("agent scan failed: %v", failure) // AgentID, Directory, Err
+}
+for _, result := range report.Results {
     for _, session := range result.Sessions {
         fmt.Println(result.AgentID, session.ID, session.UpdatedAt)
     }
 }
 ```
+
+`ScanSessions` remains as the original convenience API when failures can be
+ignored.
 
 Session index — a derived SQLite index at
 `<home>/.agent-session-sdk/home.sqlite` skips unchanged agent stores during
@@ -75,13 +87,15 @@ cache := agentsession.NewCache(32)
 entries, err := cache.Load("claude", session) // []Entry{Role, Text, Tools, Timestamp}
 ```
 
-Usage — `ScanAllUsage` returns records plus the sessions they belong to;
-`Summarize` aggregates per agent; `EstimateTokenCost` prices one record
+Usage — `ScanAllUsageDetailed` returns records plus the sessions they belong
+to and, like the session scan, per-agent failures (`ScanAllUsage` is the
+convenience wrapper that drops them); `Summarize` aggregates per agent;
+`EstimateTokenCost` prices one record
 (credit-billed agents such as qoder pay credits, not model rates):
 
 ```go
-scan := agentsession.ScanAllUsage(home)
-for _, record := range scan.Records {
+report := agentsession.ScanAllUsageDetailed(home)
+for _, record := range report.Scan.Records {
     usd, unpriced := agentsession.EstimateTokenCost(agentsession.TokenCostInput{
         AgentID:          record.AgentID,
         Model:            record.Model,
@@ -93,7 +107,7 @@ for _, record := range scan.Records {
     })
     fmt.Println(record.SessionID, usd, unpriced)
 }
-summaries := agentsession.Summarize(scan) // []AgentUsageSummary
+summaries := agentsession.Summarize(report.Scan) // []AgentUsageSummary
 ```
 
 `agentsession.PricingVersion` changes whenever the embedded price table does;
@@ -123,6 +137,11 @@ Flags: `--home <dir>` (default `$HOME`), `--agent <ids>`
 Additional indexed-read flags: `--index` (sessions/transcript), `--no-refresh`,
 `--limit <n>` and `--offset <n>` (indexed sessions/search).
 
+Exit codes: `0` on success, `1` when output could not be produced or at least
+one selected agent store failed to scan, `2` for invalid usage. Failed agents
+are reported on stderr (`agent scan failed: …`) while successful agents' JSON
+still goes to stdout, so a partial failure never masquerades as "no data".
+
 ```sh
 agent-session-sdk sessions --agent codex --pretty
 agent-session-sdk usage --cost | jq '.records | length'
@@ -145,12 +164,12 @@ model rates, curated per provider. Refreshes only touch that JSON file;
 ## Development
 
 ```sh
-go build ./...
-go test ./...
-go vet ./...
+make check   # build + vet + test (the same commands CI runs)
+go test -race ./...
 ```
 
-Comments, CLI help and diagnostics are written in English.
+CI runs build, vet and tests on Linux, macOS and Windows, with the race
+detector on Linux. Comments, CLI help and diagnostics are written in English.
 
 ## License
 

@@ -209,10 +209,10 @@ only trimmed (`cleanAssistantText`).
 ## Usage extraction → `UsageRecord[]`
 
 `scanWorkbuddyUsage` (`usage_workbuddy.go:19`) reuses `ScanWorkbuddy` for the
-session list (so the same DB filters apply), then reads each session's JSONL in
-full via `ReadAllLines` (`shared.go:522`; read failure → empty, no error),
-bounded to `FileConcurrency` (16) sessions at once. `scanWorkbuddySessionUsage`
-(`usage_workbuddy.go:42`) walks each line with `WalkLines`:
+session list (so the same DB filters apply), then streams each session's JSONL
+with `WalkJSONLFile` (malformed lines skipped, 32 MiB per-record cap, read
+failures fail the module), bounded to `FileConcurrency` (16) sessions at once.
+`scanWorkbuddySessionUsage` (`usage_workbuddy.go`) processes each record:
 
 1. **Timestamp gate.** `timestamp = floor(obj.timestamp)` only when it is a
    finite **number** (`AsNumber`); a string timestamp is not accepted here.
@@ -269,12 +269,15 @@ onto the record (`SkillCallsByName` is always null for WorkBuddy).
 
 ## Aggregation & cost
 
-- `ScanAllUsage` (`usage.go:45`) concatenates records in module order and merges
-  sessions into an ordered map keyed by bare `sessionId` (last-write-wins). Each
-  session's `tokenUsage` is the 5-tuple
+- `ScanAllUsageDetailed` (`usage.go`) concatenates records in module order and
+  merges sessions into an ordered map keyed by bare `sessionId`
+  (last-write-wins; the later module in aggregation order wins a shared id).
+  Each session's `tokenUsage` is the 5-tuple
   `[input, output, cacheRead, cacheWrite, 3]` (`3` = status flag; input excludes
   cache traffic). `filePath` is tildified against `home`. A module error is
-  fault-isolated: WorkBuddy then contributes no sessions or records.
+  fault-isolated: WorkBuddy then contributes no sessions or records, and the
+  failure is reported as an `AgentScanFailure` (the legacy `ScanAllUsage`
+  keeps the old empty-on-error behavior).
 - WorkBuddy is token-billed: `EstimateTokenCost` (`pricing.go:189`) prices a
   record from model rates (`NormalizeModelId` → `LookupModelPrice`); `credits`
   is omitted. Negative `InputTokens` participates in the arithmetic as-is. A
@@ -316,7 +319,7 @@ onto the record (`SkillCallsByName` is always null for WorkBuddy).
 | Content → entries, tool cards, cleaning | `transcript.go` (`entriesFromContent`, `toolCall`, `cleanUserText`) |
 | Usage extraction | `usage_workbuddy.go` (`scanWorkbuddyUsage`, `scanWorkbuddySessionUsage`, `isWorkbuddyRealUserPrompt`, `readWorkbuddyUsage`, `readWorkbuddyModel`, `cachedTokensDetail`) |
 | Activity tally | `tally.go` (`SessionTally`) |
-| Aggregation | `usage.go` (`ScanAllUsage`, `ApplyInterval`, `MergeInterval`) |
+| Aggregation & failure reporting | `usage.go` (`ScanAllUsageDetailed`, `ApplyInterval`, `MergeInterval`), `registry.go` (`AgentScanFailure`) |
 | Pricing | `pricing.go` (`EstimateTokenCost`, `NormalizeModelId`, `LookupModelPrice`) |
-| Shared helpers | `shared.go` (`ToTitle`, `AsEpochMs`, `AsNumber`, `AsTokenCount`, `ContentToText`, `FileSize`, `OpenSQLite`, `QueryMaps`, `ReadAllLines`, `WalkLines`, `MapLimit`) |
+| Shared helpers | `shared.go` (`ToTitle`, `AsEpochMs`, `AsNumber`, `AsTokenCount`, `ContentToText`, `FileSize`, `OpenSQLite`, `QueryMaps`, `WalkJSONLFile`, `MapLimit`) |
 | Output contract | `contract.go` (`SessionInfo`, `UsageRecord`, `Entry`, `ToolCall`) |

@@ -52,11 +52,13 @@ extraction → aggregation & cost → quirks → source map.
 - **No index.** Unlike Claude there is no `sessions-index.json`; every session
   file is streamed.
 - **Subagents are skipped naturally.** Subagent transcripts live under
-  `<sessionUuid>/subagents/`. `ListFiles(projectDir, ".jsonl", false)`
-  (`shared.go:387`) is non-recursive, so that subtree is never enumerated. The
-  usage path (`os.ReadDir`, `usage_qoder.go:71`) is likewise top-level only.
-- Dot-prefixed project directories are skipped (`ListDirs`); dot-prefixed files
-  are skipped (`ListFiles`).
+  `<sessionUuid>/subagents/`. `ListFilesE(projectDir, ".jsonl", false)`
+  (`shared.go`) is non-recursive, so that subtree is never enumerated. The
+  usage path (`os.ReadDir`, `usage_qoder.go`) is likewise top-level only.
+- Dot-prefixed project directories are skipped (`ListDirsE`); dot-prefixed files
+  are skipped (`ListFilesE`). A missing `projects/` directory is an empty
+  store; any other listing error fails the whole Qoder scan and is reported
+  per agent by `ScanSessionsDetailed`.
 
 ## Record format (JSONL)
 
@@ -138,16 +140,17 @@ A preceding `runtime-config` line sets the window:
 
 ## Session scanning → `SessionInfo`
 
-`ScanQoder` (`qoder.go:20`) lists `projects/` (`ListDirs`, skipping dot
-directories) and, per project directory, lists `*.jsonl` non-recursively
-(`ListFiles`). Files are scanned up to `FileConcurrency` (16) at once via
-`MapLimit` → `scanQoderFile` (`qoder.go:39`). There is no index fast path.
+`ScanQoder` (`qoder.go:20`) lists `projects/` (`qoderProjectDirs` /
+`ListDirsE`, skipping dot directories; a missing root is an empty store) and,
+per project directory, lists `*.jsonl` non-recursively (`ListFilesE`).
+Files are scanned up to `FileConcurrency` (16) at once via `MapLimit` →
+`scanQoderFile` (`qoder.go`). There is no index fast path.
 
 Per file:
 
-1. **Stat.** `os.Stat(file)`; if it fails (the file vanished after enumeration)
-   the file is skipped, not fatal.
-2. **Metadata pass** — one streaming `ScanLines` pass (bounded by `ScanMaxBytes`,
+1. **Stat.** `os.Stat(file)`; a file that vanished after enumeration is
+   skipped, not fatal — any other stat error fails the scan.
+2. **Metadata pass** — one streaming `ScanLinesE` pass (bounded by `ScanMaxBytes`,
    32 MiB) that remembers the first hit for each of two fields and stops once
    both are found:
    - `createdAt` = `AsEpochMs(timestamp)` from the first line with a parseable
@@ -160,7 +163,7 @@ Per file:
 3. **Workspace fallback.** If no in-file workspace was found, decode the project
    directory name with `DecodePathDirName`. If the workspace is still nil or
    empty, skip the file.
-4. **Title pass** — a separate `ScanLines` pass for the first `type == "user"`
+4. **Title pass** — a separate `ScanLinesE` pass for the first `type == "user"`
    line whose `QoderUserPromptText(message)` yields a usable `ToTitle`. Lines
    that produce no prompt text (tool_result echoes, plain-string skill bodies)
    or an injected/empty title are skipped, so the scan keeps looking for the
@@ -225,11 +228,12 @@ kinds/titles). Only the Qoder-specific notes are repeated here:
 
 `scanQoderUsage` (`usage_qoder.go:51`) is a thin wrapper over
 `scanQoderUsageAs(agentDir, "qoder")` (`usage_qoder.go:59`). It reuses `ScanQoder`
-for the session list, then for each project directory reads every top-level
-`*.jsonl` in full (`scanQoderProjectUsage` → `scanQoderFileUsage`,
-`usage_qoder.go:85`). `ReadAllLines` reads the whole file (no byte cap; failures
-yield empty). The `agentID` argument only stamps `UsageRecord.AgentID`; the
-parsing is otherwise identical for both editions.
+for the session list, then for each project directory streams every top-level
+`*.jsonl` (`scanQoderProjectUsage` → `scanQoderFileUsage`, `usage_qoder.go`)
+with `WalkJSONLFile` — malformed lines are skipped, one record is capped at
+32 MiB, and open/read failures fail the module. The `agentID` argument only
+stamps `UsageRecord.AgentID`; the parsing is otherwise identical for both
+editions.
 
 ### Per-line walk (`scanQoderFileUsage`)
 
@@ -355,11 +359,14 @@ Identical machinery to Claude (`SessionTally`, `tally.go:36`):
 
 ## Aggregation & cost
 
-- `ScanAllUsage` (`usage.go:45`) concatenates records in module order and merges
-  sessions into an ordered map keyed by bare `sessionId` (last-write-wins). Each
-  session's `tokenUsage` is the 5-tuple
+- `ScanAllUsageDetailed` (`usage.go`) concatenates records in module order and
+  merges sessions into an ordered map keyed by bare `sessionId`
+  (last-write-wins; the later module in aggregation order wins a shared id).
+  Each session's `tokenUsage` is the 5-tuple
   `[input, output, cacheRead, cacheWrite, 3]` (input excludes cache traffic; `3`
-  is the status flag). `filePath` is tildified against `home`. **Credits are not
+  is the status flag). `filePath` is tildified against `home`. Failed modules
+  are dropped from the aggregation and reported as `AgentScanFailure` entries.
+  **Credits are not
   summed into this tuple** — they live only on individual `UsageRecord`s.
 - **Qoder is credit-billed.** `EstimateTokenCost` (`pricing.go:189`) routes
   `qoder` / `qoder-cn` through `creditPriceUSD` (`pricing.go:48`) instead of model
@@ -414,7 +421,7 @@ Identical machinery to Claude (`SessionTally`, `tally.go:36`):
 | Token reconstruction / chars / CJK | `usage_qoder.go` (`flushGroup`, `qoderAddBlockChars`, `qoderAddValueChars`, `qoderAddTextChars`, `qoderIsCjkRune`) |
 | Credits | `usage_qoder.go` (`qoderRequestCredits`) |
 | Activity tally | `tally.go` (`SessionTally`) |
-| Aggregation | `usage.go` (`ScanAllUsage`, `ApplyInterval`, `MergeInterval`) |
+| Aggregation & failure reporting | `usage.go` (`ScanAllUsageDetailed`, `ApplyInterval`, `MergeInterval`), `registry.go` (`AgentScanFailure`) |
 | Pricing (credit-billed) | `pricing.go` (`EstimateTokenCost`, `creditPriceUSD`, `PricingVersion`) |
-| Shared helpers | `shared.go` (`ToTitle`, `DecodePathDirName`, `SkillOfToolUse`, `AsEpochMs`, `AsTimestamp`, `AsTokenCount`, `ListDirs`, `ListFiles`, `ScanLines`, `ReadAllLines`) |
+| Shared helpers | `shared.go` (`ToTitle`, `DecodePathDirName`, `SkillOfToolUse`, `AsEpochMs`, `AsTimestamp`, `AsTokenCount`, `ListDirsE`, `ListFilesE`, `ScanLinesE`, `WalkJSONLFile`) |
 | Output contract | `contract.go` (`SessionInfo`, `UsageRecord`, `Entry`, `ToolCall`) |

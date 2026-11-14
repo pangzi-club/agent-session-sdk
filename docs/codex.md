@@ -37,8 +37,10 @@ adjacent events rather than reading per-turn numbers.
 ```
 
 - **A three-level date tree.** `ScanCodex` (`codex.go:14`) walks
-  `sessions/` → year → month → day with `ListDirs` at each level, then
-  `ListFiles(day, ".jsonl", false)` — non-recursive inside the day directory.
+  `sessions/` → year → month → day with `ListDirsE` at each level, then
+  `ListFilesE(day, ".jsonl", false)` — non-recursive inside the day directory.
+  A missing `sessions/` tree is an empty store; any other listing error fails
+  the whole `codex` scan (reported per agent by `ScanSessionsDetailed`).
   The file name above is illustrative; the SDK never parses it.
 - **One rollout JSONL per session.** The file name minus `.jsonl` is the session
   id (`strings.TrimSuffix(filepath.Base(file), ".jsonl")`). The whole base name
@@ -47,7 +49,7 @@ adjacent events rather than reading per-turn numbers.
   `sessions-index.json` fast path and no `DecodePathDirName` heuristic: the
   date tree carries no project identity, so the workspace is read from the
   `session_meta` payload's `cwd` (see below).
-- Dot-prefixed directories and files are skipped (`ListDirs` / `ListFiles`).
+- Dot-prefixed directories and files are skipped (`ListDirsE` / `ListFilesE`).
 
 ## Record format (JSONL)
 
@@ -260,8 +262,9 @@ string or it yields no title.
 
 1. Call `ScanCodexFile` for the session; nil → skip (a file without a
    `session_meta` + `cwd` contributes nothing).
-2. `ReadAllLines` — the **whole file** is read into memory (no byte cap, unlike
-   the streaming scan), then `WalkLines` visits each parsed record:
+2. `WalkJSONLFile` streams the file record by record (malformed lines are
+   skipped, one record is capped at 32 MiB, open/read failures fail the
+   module):
    - **`turn_context`** — the first `payload.model` wins (`model` pointer); return.
    - **`response_item`** — `ts = AsTimestamp(obj.timestamp)` (strings only; nil →
      skip). `message` + role `user` → if `codexIsUserPrompt(content)`, a
@@ -364,8 +367,8 @@ skill accounting (unlike Claude's `Skill` tool).
   `上下文已压缩`).
 - **Timestamp asymmetry.** The transcript (`mapTimestamp`) accepts numeric or
   string timestamps; usage (`AsTimestamp`) accepts strings only.
-- **Scan streams, usage does not.** The scan is byte-bounded (`ScanMaxBytes`,
-  32 MiB); usage `ReadAllLines` loads the whole file unbounded.
+- **Scan and usage both stream.** The scan is byte-bounded (`ScanMaxBytes`,
+  32 MiB per pass); usage streams line by line with a 32 MiB per-record cap.
 - **Model is session-wide.** The first `turn_context` wins; records emitted
   before it (or with no `turn_context`) carry that model or nil.
 - **`arguments` is a JSON string.** `argumentsMap` parses it; a failure yields
@@ -384,7 +387,7 @@ skill accounting (unlike Claude's `Skill` tool).
 | Content → entries, tool cards, cleaning | `transcript.go` (`entriesFromContent`, `toolCall`, `cleanUserText`, `mapTimestamp`, `scanJSONLines`) |
 | Usage extraction | `usage_codex.go` (`scanCodexUsage`, `scanCodexFileUsage`, `codexIsUserPrompt`) |
 | Activity tally | `tally.go` (`SessionTally`) |
-| Aggregation | `usage.go` (`ScanAllUsage`, `ApplyInterval`, `MergeInterval`) |
+| Aggregation & failure reporting | `usage.go` (`ScanAllUsageDetailed`, `ApplyInterval`, `MergeInterval`), `registry.go` (`AgentScanFailure`) |
 | Pricing | `pricing.go` (`EstimateTokenCost`, `NormalizeModelId`, `LookupModelPrice`) |
-| Shared helpers | `shared.go` (`ToTitle`, `ContentToText`, `AsEpochMs`, `AsTimestamp`, `AsTokenCount`, `ScanLines`, `ReadAllLines`, `ListDirs`, `ListFiles`) |
+| Shared helpers | `shared.go` (`ToTitle`, `ContentToText`, `AsEpochMs`, `AsTimestamp`, `AsTokenCount`, `ScanLinesE`, `WalkJSONLFile`, `ListDirsE`, `ListFilesE`) |
 | Output contract | `contract.go` (`SessionInfo`, `UsageRecord`, `Entry`, `ToolCall`) |

@@ -49,7 +49,9 @@ usage module.
   directory name (a uuid). The transcript file must be named `<id>.jsonl` inside
   it; a directory without that same-named file is skipped as a non-session /
   incomplete directory.
-- Dot-prefixed project and session directories are skipped (`ListDirs`).
+- Dot-prefixed project and session directories are skipped (`ListDirsE`). A
+  missing `projects/` root is an empty store; any other listing error fails
+  the Cursor scan and is reported per agent by `ScanSessionsDetailed`.
 
 ## Record format (JSONL)
 
@@ -101,9 +103,11 @@ fails the whole batch. Per pair (`scanCursorSessionDir`, `cursor.go:47`):
 
 - `id = basename(sessionDir)`; `file = sessionDir/<id>.jsonl`.
 - `stat(file)`; if it is missing, skip the directory (return nil) — this is how
-  non-session / incomplete directories are filtered out.
-- `title = ScanLines(file, pickCursorTitle, ScanMaxBytes)` — stream the file
-  (32 MiB cap) until the first user message yields a title.
+  non-session / incomplete directories are filtered out. Any other stat error
+  fails the scan.
+- `title = ScanLinesE(file, pickCursorTitle, ScanMaxBytes)` — stream the file
+  (32 MiB cap) until the first user message yields a title; a read failure
+  fails the scan.
 - `workspace = decodeCursorProjectDirName(basename(projectDir))`.
 - `createdAt = updatedAt = FloorMtimeMs(file)` — the file mtime is the **only**
   time source; record timestamps are not read for scanning.
@@ -215,10 +219,10 @@ clipped to 80).
 | Registry entry | `registry.go:25` |
 | Session scan | `cursor.go` (`ScanCursor`, `scanCursorSessionDir`) |
 | Workspace decode | `cursor.go` (`decodeCursorProjectDirName`) |
-| Title selection | `cursor.go` (`pickCursorTitle`, `cursorUserQueryRe`); `shared.go` (`FirstLineTitle`, `ContentToText`, `ScanLines`) |
+| Title selection | `cursor.go` (`pickCursorTitle`, `cursorUserQueryRe`); `shared.go` (`FirstLineTitle`, `ContentToText`, `ScanLinesE`) |
 | Transcript loader | `transcript_cursor.go` (`parseCursorTranscript`) |
 | Role / content resolution | `transcript.go` (`messageRole`, `messageContent`, `roleFromString`) |
 | Content → entries, tool cards, cleaning | `transcript.go` (`entriesFromContent`, `toolCall`, `cleanUserText`, `cursorTimestampRe`) |
-| Filesystem / concurrency helpers | `shared.go` (`ListDirs`, `MapLimit`, `FloorMtimeMs`) |
-| Usage aggregation (cursor absent) | `usage.go` (`usageModules`, `ScanAllUsage`) |
+| Filesystem / concurrency helpers | `shared.go` (`ListDirsE`, `MapLimit`, `FloorMtimeMs`) |
+| Usage aggregation (cursor absent) | `usage.go` (`usageModules`, `ScanAllUsageDetailed`) |
 | Output contract | `contract.go` (`SessionInfo`, `Entry`, `ToolCall`) |
