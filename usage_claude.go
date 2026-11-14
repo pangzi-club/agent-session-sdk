@@ -61,13 +61,9 @@ func scanClaudeSessionUsage(session SessionInfo, agentID string) ([]UsageRecord,
 }
 
 func scanClaudeUsageRecords(file, sessionID, agentID string) ([]UsageRecord, error) {
-	lines, err := ReadAllLinesE(file)
-	if err != nil {
-		return nil, err
-	}
 	tally := &SessionTally{}
 	records := []UsageRecord{}
-	WalkLines(lines, func(obj map[string]any) {
+	if err := WalkJSONLFile(file, func(obj map[string]any) {
 		// isSidechain = subagent (Task tool) request; not counted toward main-session usage
 		if AsBoolTrue(obj["isSidechain"]) {
 			return
@@ -128,7 +124,9 @@ func scanClaudeUsageRecords(file, sessionID, agentID string) ([]UsageRecord, err
 		}
 		record.ApplyInterval(tally.TakeUntil(*timestamp))
 		records = append(records, record)
-	})
+	}); err != nil {
+		return nil, err
+	}
 	if len(records) > 0 {
 		records[len(records)-1].MergeInterval(tally.Flush())
 	}

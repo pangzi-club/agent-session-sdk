@@ -26,11 +26,45 @@ import (
 // FileConcurrency mirrors FILE_CONCURRENCY in agents/ts.
 const FileConcurrency = 16
 
-// ScanMaxBytes mirrors SCAN_MAX_BYTES in agents/ts (32MB streaming scan limit).
-const ScanMaxBytes = 32 * 1024 * 1024
+// fileWorkTokens bounds the total number of concurrently running file-worker
+// functions across the whole process. Per-scan pools multiply (all agents scan
+// in parallel, and each runs its own pool), so the per-pool limit alone does
+// not cap disk-reading parallelism; this shared budget does. Every MapLimit
+// worker holds one token while running, therefore fn must not call MapLimit
+// itself — scanners enumerate nested work up front instead (see kimi_code.go).
+var fileWorkTokens = make(chan struct{}, FileConcurrency)
+
+// MapLimit mirrors mapLimit: bounded per-call concurrency, results keep input
+// order, any failure fails the whole batch. Worker bodies additionally share
+// the process-wide fileWorkTokens budget.
+func MapLimit[T any, R any](items []T, limit int, fn func(T) (R, error)) ([]R, error) {
+	results := make([]R, len(items))
+	group, _ := errgroup.WithContext(context.Background())
+	group.SetLimit(limit)
+	for i, item := range items {
+		i, item := i, item
+		group.Go(func() error {
+			fileWorkTokens <- struct{}{}
+			defer func() { <-fileWorkTokens }()
+			r, err := fn(item)
+			if err != nil {
+				return err
+			}
+			results[i] = r
+			return nil
+		})
+	}
+	if err := group.Wait(); err != nil {
+		return nil, err
+	}
+	return results, nil
+}
 
 // ActiveGapCapMs mirrors ACTIVE_GAP_CAP_MS in usage/ts.
 const ActiveGapCapMs = 120_000
+
+// ScanMaxBytes mirrors SCAN_MAX_BYTES in agents/ts (32MB streaming scan limit).
+const ScanMaxBytes = 32 * 1024 * 1024
 
 // ---- JSON value helpers (equivalent to the TS typeof checks on unknown) ----
 
@@ -426,40 +460,21 @@ func ListFiles(dir, ext string, recursive bool) []string {
 	return files
 }
 
-// MapLimit mirrors mapLimit: bounded concurrency, results keep input order, any failure fails the whole batch.
-func MapLimit[T any, R any](items []T, limit int, fn func(T) (R, error)) ([]R, error) {
-	results := make([]R, len(items))
-	group, _ := errgroup.WithContext(context.Background())
-	group.SetLimit(limit)
-	for i, item := range items {
-		i, item := i, item
-		group.Go(func() error {
-			r, err := fn(item)
-			if err != nil {
-				return err
-			}
-			results[i] = r
-			return nil
-		})
-	}
-	if err := group.Wait(); err != nil {
-		return nil, err
-	}
-	return results, nil
-}
-
-// ReadHeadLines mirrors readHead: read the first maxBytes bytes and split them into lines (the last
-// line may be truncated; the caller has to tolerate that). Same as TS: open/read failures propagate
-// as errors (the pi/kimi call sites do not catch them, so one bad file zeroes out the whole agent).
+// ReadHeadLines reads only the first maxBytes bytes and splits them into lines
+// (the last line may be truncated; the caller has to tolerate that). Open and
+// read failures propagate as errors.
 func ReadHeadLines(file string, maxBytes int) ([]string, error) {
-	data, err := os.ReadFile(file)
+	f, err := os.Open(file)
 	if err != nil {
 		return nil, err
 	}
-	if len(data) > maxBytes {
-		data = data[:maxBytes]
+	defer f.Close()
+	data := make([]byte, maxBytes)
+	n, err := io.ReadFull(f, data)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+		return nil, err
 	}
-	return strings.Split(string(data), "\n"), nil
+	return strings.Split(string(data[:n]), "\n"), nil
 }
 
 // ParseLines mirrors parseLines: the first JSON line that parses and satisfies pick; unparseable lines are skipped.

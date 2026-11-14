@@ -95,10 +95,6 @@ func scanQoderProjectUsage(projectDir, agentID string) ([]UsageRecord, error) {
 }
 
 func scanQoderFileUsage(file, agentID string) ([]UsageRecord, error) {
-	lines, err := ReadAllLinesE(file)
-	if err != nil {
-		return nil, err
-	}
 	tally := &SessionTally{}
 	records := []UsageRecord{}
 	contextWindow := float64(qoderDefaultContextWindow)
@@ -143,7 +139,7 @@ func scanQoderFileUsage(file, agentID string) ([]UsageRecord, error) {
 		records = append(records, record)
 	}
 
-	WalkLines(lines, func(obj map[string]any) {
+	if err := WalkJSONLFile(file, func(obj map[string]any) {
 		// Sub-agent lines interleaved in the main transcript are skipped too
 		// (same as Claude).
 		if AsBoolTrue(obj["isSidechain"]) {
@@ -216,7 +212,9 @@ func scanQoderFileUsage(file, agentID string) ([]UsageRecord, error) {
 		if !hasID {
 			flushGroup()
 		}
-	})
+	}); err != nil {
+		return nil, err
+	}
 	flushGroup()
 	if len(records) > 0 {
 		records[len(records)-1].MergeInterval(tally.Flush())

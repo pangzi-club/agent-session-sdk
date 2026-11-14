@@ -48,13 +48,9 @@ func scanPiSessionUsage(session SessionInfo, agentID string) (*piFileUsage, erro
 	if session.FilePath == nil || *session.FilePath == "" {
 		return &piFileUsage{session: session, records: []UsageRecord{}}, nil
 	}
-	lines, err := ReadAllLinesE(*session.FilePath)
-	if err != nil {
-		return nil, err
-	}
 	tally := &SessionTally{}
 	records := []UsageRecord{}
-	WalkLines(lines, func(obj map[string]any) {
+	if err := WalkJSONLFile(*session.FilePath, func(obj map[string]any) {
 		if !IsStr(obj["type"], "message") {
 			return
 		}
@@ -110,7 +106,9 @@ func scanPiSessionUsage(session SessionInfo, agentID string) (*piFileUsage, erro
 		}
 		record.ApplyInterval(tally.TakeUntil(timestamp))
 		records = append(records, record)
-	})
+	}); err != nil {
+		return nil, err
+	}
 	if len(records) > 0 {
 		records[len(records)-1].MergeInterval(tally.Flush())
 	}

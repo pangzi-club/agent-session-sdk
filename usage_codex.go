@@ -58,16 +58,12 @@ func scanCodexSessionUsage(session SessionInfo, agentID string) ([]UsageRecord, 
 }
 
 func scanCodexUsageRecords(file, sessionID, agentID string) ([]UsageRecord, error) {
-	lines, err := ReadAllLinesE(file)
-	if err != nil {
-		return nil, err
-	}
 	tally := &SessionTally{}
 	records := []UsageRecord{}
 	var model *string
 	var prev *codexTokenTotal
 
-	WalkLines(lines, func(obj map[string]any) {
+	if err := WalkJSONLFile(file, func(obj map[string]any) {
 		payload := GetMap(obj["payload"])
 
 		// Model name: turn_context appears at the session head; take the first one
@@ -141,7 +137,9 @@ func scanCodexUsageRecords(file, sessionID, agentID string) ([]UsageRecord, erro
 		}
 		record.ApplyInterval(tally.TakeUntil(*ts))
 		records = append(records, record)
-	})
+	}); err != nil {
+		return nil, err
+	}
 
 	if len(records) > 0 {
 		records[len(records)-1].MergeInterval(tally.Flush())

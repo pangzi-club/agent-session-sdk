@@ -22,35 +22,37 @@ func ScanKimi(agentDir string) ([]SessionInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	results, err := MapLimit(projectDirs, FileConcurrency, func(projectDir string) ([]SessionInfo, error) {
+	// Enumerate session directories up front; one bounded pool scans them all
+	// instead of a pool per project directory.
+	type kimiScan struct {
+		dir       string
+		workspace string
+	}
+	var sessionDirs []kimiScan
+	for _, projectDir := range projectDirs {
 		workspace, ok := workspaces[filepath.Base(projectDir)]
 		if !ok {
-			return nil, nil
+			continue
 		}
-		sessionDirs, err := ListDirsE(projectDir)
+		dirs, err := ListDirsE(projectDir)
 		if err != nil {
 			return nil, err
 		}
-		sessions, err := MapLimit(sessionDirs, FileConcurrency, func(dir string) (*SessionInfo, error) {
-			return scanKimiSession(dir, workspace)
-		})
-		if err != nil {
-			return nil, err
+		for _, dir := range dirs {
+			sessionDirs = append(sessionDirs, kimiScan{dir: dir, workspace: workspace})
 		}
-		out := []SessionInfo{}
-		for _, session := range sessions {
-			if session != nil {
-				out = append(out, *session)
-			}
-		}
-		return out, nil
+	}
+	results, err := MapLimit(sessionDirs, FileConcurrency, func(item kimiScan) (*SessionInfo, error) {
+		return scanKimiSession(item.dir, item.workspace)
 	})
 	if err != nil {
 		return nil, err
 	}
 	out := []SessionInfo{}
-	for _, sessions := range results {
-		out = append(out, sessions...)
+	for _, session := range results {
+		if session != nil {
+			out = append(out, *session)
+		}
 	}
 	return out, nil
 }

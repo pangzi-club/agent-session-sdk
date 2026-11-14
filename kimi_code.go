@@ -36,49 +36,44 @@ func ScanKimiCode(agentDir string) ([]SessionInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	results, err := MapLimit(projectDirs, FileConcurrency, func(projectDir string) ([]SessionInfo, error) {
+	// Flatten wd_*/session_*/agents/* into one task list so a single bounded
+	// pool covers the whole store (nested pools would multiply concurrency).
+	type kimiCodeScan struct {
+		sessionDir string
+		agentDir   string
+		state      kimiCodeState
+	}
+	var tasks []kimiCodeScan
+	for _, projectDir := range projectDirs {
 		sessionDirs, err := ListDirsE(projectDir)
 		if err != nil {
 			return nil, err
 		}
-		sessionResults, err := MapLimit(sessionDirs, FileConcurrency, func(sessionDir string) ([]SessionInfo, error) {
+		for _, sessionDir := range sessionDirs {
 			state := loadKimiCodeState(filepath.Join(sessionDir, "state.json"))
 			agentDirs, err := ListDirsE(filepath.Join(sessionDir, "agents"))
 			if errors.Is(err, os.ErrNotExist) {
-				return []SessionInfo{}, nil
+				continue
 			}
 			if err != nil {
 				return nil, err
 			}
-			items, err := MapLimit(agentDirs, FileConcurrency, func(agentDir string) (*SessionInfo, error) {
-				return scanKimiCodeAgent(sessionDir, agentDir, state, index)
-			})
-			if err != nil {
-				return nil, err
+			for _, agentDir := range agentDirs {
+				tasks = append(tasks, kimiCodeScan{sessionDir: sessionDir, agentDir: agentDir, state: state})
 			}
-			out := []SessionInfo{}
-			for _, item := range items {
-				if item != nil {
-					out = append(out, *item)
-				}
-			}
-			return out, nil
-		})
-		if err != nil {
-			return nil, err
 		}
-		out := []SessionInfo{}
-		for _, sessions := range sessionResults {
-			out = append(out, sessions...)
-		}
-		return out, nil
+	}
+	results, err := MapLimit(tasks, FileConcurrency, func(task kimiCodeScan) (*SessionInfo, error) {
+		return scanKimiCodeAgent(task.sessionDir, task.agentDir, task.state, index)
 	})
 	if err != nil {
 		return nil, err
 	}
 	out := []SessionInfo{}
-	for _, sessions := range results {
-		out = append(out, sessions...)
+	for _, item := range results {
+		if item != nil {
+			out = append(out, *item)
+		}
 	}
 	return out, nil
 }

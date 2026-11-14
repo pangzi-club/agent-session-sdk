@@ -10,9 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
-
-	"golang.org/x/sync/errgroup"
 )
 
 // ScanClaude aligns with scanClaude.
@@ -28,29 +25,34 @@ func scanClaudeProjectsDir(projectsDir string) ([]SessionInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := make([]SessionInfo, 0)
-	group := new(errgroup.Group)
-	var mu sync.Mutex
+	// Enumerate every project before scanning so one bounded pool covers all
+	// files instead of one pool per project directory.
+	out := []SessionInfo{}
+	var files []string
 	for _, dir := range projectDirs {
-		dir := dir
-		group.Go(func() error {
-			sessions, err := scanClaudeProjectDir(dir)
-			if err != nil {
-				return err
-			}
-			mu.Lock()
-			out = append(out, sessions...)
-			mu.Unlock()
-			return nil
-		})
+		indexed, projectFiles, err := claudeProjectSessions(dir)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, indexed...)
+		files = append(files, projectFiles...)
 	}
-	if err := group.Wait(); err != nil {
+	results, err := MapLimit(files, FileConcurrency, scanClaudeFile)
+	if err != nil {
 		return nil, err
+	}
+	for _, session := range results {
+		if session != nil {
+			out = append(out, *session)
+		}
 	}
 	return out, nil
 }
 
-func scanClaudeProjectDir(projectDir string) ([]SessionInfo, error) {
+// claudeProjectSessions returns the sessions-index.json fast path for one
+// project directory, plus the JSONL files that need a streaming scan when the
+// index is missing or empty.
+func claudeProjectSessions(projectDir string) ([]SessionInfo, []string, error) {
 	if raw, err := os.ReadFile(filepath.Join(projectDir, "sessions-index.json")); err == nil {
 		var root any
 		if json.Unmarshal(raw, &root) == nil {
@@ -122,7 +124,7 @@ func scanClaudeProjectDir(projectDir string) ([]SessionInfo, error) {
 					})
 				}
 				if len(fromIndex) > 0 {
-					return fromIndex, nil
+					return fromIndex, nil, nil
 				}
 			}
 		}
@@ -130,19 +132,9 @@ func scanClaudeProjectDir(projectDir string) ([]SessionInfo, error) {
 	// Fallback: stream-scan every JSONL in the project directory (stop at the first hit, never read the whole file)
 	files, err := ListFilesE(projectDir, ".jsonl", false)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	results, err := MapLimit(files, FileConcurrency, scanClaudeFile)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]SessionInfo, 0, len(results))
-	for _, session := range results {
-		if session != nil {
-			out = append(out, *session)
-		}
-	}
-	return out, nil
+	return nil, files, nil
 }
 
 func scanClaudeFile(file string) (*SessionInfo, error) {

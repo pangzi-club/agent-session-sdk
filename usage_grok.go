@@ -10,7 +10,9 @@ package agentsession
 // The session list reuses ScanGrokSessionDir (the same summary.json); directories without summary.json are skipped entirely.
 
 import (
+	"errors"
 	"math"
+	"os"
 	"path/filepath"
 )
 
@@ -52,11 +54,7 @@ func scanGrokSessionUsage(dir string) (*grokSessionUsage, error) {
 
 	tally := &SessionTally{}
 	records := []UsageRecord{}
-	lines, err := ReadAllLinesE(filepath.Join(dir, "updates.jsonl"))
-	if err != nil {
-		return nil, err
-	}
-	WalkLines(lines, func(obj map[string]any) {
+	err = WalkJSONLFile(filepath.Join(dir, "updates.jsonl"), func(obj map[string]any) {
 		params := GetMap(obj["params"])
 		update := GetMap(params["update"])
 		if update == nil {
@@ -99,6 +97,11 @@ func scanGrokSessionUsage(dir string) (*grokSessionUsage, error) {
 		record.ApplyInterval(tally.TakeUntil(timestamp))
 		records = append(records, record)
 	})
+	// summary.json is the session marker; a session dir without updates.jsonl
+	// simply has no usage events (it contributes the session list entry only).
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
 	if len(records) > 0 {
 		records[len(records)-1].MergeInterval(tally.Flush())
 	}

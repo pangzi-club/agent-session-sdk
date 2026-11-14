@@ -226,19 +226,51 @@ func (index *SessionIndex) List(query SessionIndexQuery) ([]SessionScanResult, e
 	return out, nil
 }
 
-// Get returns one indexed session.
+// Get returns one indexed session, resolved by the (agent_id, id) primary
+// key instead of reading every session of the agent.
 func (index *SessionIndex) Get(agentID, sessionID string) (*SessionInfo, error) {
-	sessions, err := index.querySessions(SessionIndexQuery{AgentIDs: []string{agentID}})
+	item, err := decodeSessionRow(index.db.QueryRow(
+		"SELECT "+sessionIndexColumns+" FROM sessions s WHERE s.agent_id = ? AND s.id = ?",
+		agentID, sessionID,
+	).Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("session %q not found for agent %q", sessionID, agentID)
+	}
 	if err != nil {
 		return nil, err
 	}
-	for _, row := range sessions {
-		if row.session.ID == sessionID {
-			value := row.session
-			return &value, nil
+	return &item.session, nil
+}
+
+// sessionIndexColumns is the canonical sessions projection shared by Get and
+// querySessions so the two cannot drift apart.
+const sessionIndexColumns = "s.agent_id, s.id, s.workspace, s.title, s.blank, s.created_at, s.updated_at, s.size_bytes, s.file_path, s.token_usage, s.transcript_format"
+
+// decodeSessionRow scans one index row into a SessionInfo; scan is the Scan
+// method of either *sql.Rows or *sql.Row.
+func decodeSessionRow(scan func(dest ...any) error) (indexedSession, error) {
+	var item indexedSession
+	var title, filePath, tokenUsage *string
+	var blank *bool
+	var transcriptFormat string
+	if err := scan(&item.agentID, &item.session.ID, &item.session.Workspace,
+		&title, &blank, &item.session.CreatedAt, &item.session.UpdatedAt,
+		&item.session.SizeBytes, &filePath, &tokenUsage, &transcriptFormat); err != nil {
+		return indexedSession{}, err
+	}
+	item.session.Title = title
+	item.session.Blank = blank
+	item.session.transcriptFormat = transcriptFormat
+	if filePath != nil && *filePath != "" {
+		item.session.FilePath = filePath
+	}
+	if tokenUsage != nil && *tokenUsage != "" {
+		values := [5]float64{}
+		if json.Unmarshal([]byte(*tokenUsage), &values) == nil {
+			item.session.TokenUsage = &values
 		}
 	}
-	return nil, fmt.Errorf("session %q not found for agent %q", sessionID, agentID)
+	return item, nil
 }
 
 type indexedSession struct {
@@ -262,7 +294,7 @@ func (index *SessionIndex) querySessions(query SessionIndexQuery) ([]indexedSess
 		where = append(where, "(s.title LIKE ? ESCAPE '\\' OR s.workspace LIKE ? ESCAPE '\\' OR s.id LIKE ? ESCAPE '\\' OR s.agent_id LIKE ? ESCAPE '\\')")
 		args = append(args, pattern, pattern, pattern, pattern)
 	}
-	statement := "SELECT s.agent_id, s.id, s.workspace, s.title, s.blank, s.created_at, s.updated_at, s.size_bytes, s.file_path, s.token_usage, s.transcript_format FROM sessions s"
+	statement := "SELECT " + sessionIndexColumns + " FROM sessions s"
 	if len(where) != 0 {
 		statement += " WHERE " + strings.Join(where, " AND ")
 	}
@@ -279,26 +311,9 @@ func (index *SessionIndex) querySessions(query SessionIndexQuery) ([]indexedSess
 
 	out := []indexedSession{}
 	for rows.Next() {
-		var item indexedSession
-		var title, filePath, tokenUsage *string
-		var blank *bool
-		var transcriptFormat string
-		if err := rows.Scan(&item.agentID, &item.session.ID, &item.session.Workspace,
-			&title, &blank, &item.session.CreatedAt, &item.session.UpdatedAt,
-			&item.session.SizeBytes, &filePath, &tokenUsage, &transcriptFormat); err != nil {
+		item, err := decodeSessionRow(rows.Scan)
+		if err != nil {
 			return nil, err
-		}
-		item.session.Title = title
-		item.session.Blank = blank
-		item.session.transcriptFormat = transcriptFormat
-		if filePath != nil && *filePath != "" {
-			item.session.FilePath = filePath
-		}
-		if tokenUsage != nil && *tokenUsage != "" {
-			values := [5]float64{}
-			if json.Unmarshal([]byte(*tokenUsage), &values) == nil {
-				item.session.TokenUsage = &values
-			}
 		}
 		out = append(out, item)
 	}

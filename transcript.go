@@ -85,7 +85,9 @@ func NewCache(max int) *Cache {
 	return &Cache{max: max, items: map[string]*cacheItem{}}
 }
 
-// Load returns the cached transcript or parses and caches it.
+// Load returns the cached transcript or parses and caches it. The returned
+// slice is a copy: callers may reorder, append to or overwrite entries without
+// corrupting what the next Load of the same session returns.
 func (c *Cache) Load(agentID string, info SessionInfo) ([]Entry, error) {
 	key := agentID + ":" + info.ID
 	signature := transcriptSignature(info)
@@ -93,7 +95,7 @@ func (c *Cache) Load(agentID string, info SessionInfo) ([]Entry, error) {
 	c.mu.Lock()
 	if item, ok := c.items[key]; ok && item.signature == signature {
 		c.touch(key)
-		entries := item.entries
+		entries := copyEntries(item.entries)
 		c.mu.Unlock()
 		return entries, nil
 	}
@@ -115,7 +117,24 @@ func (c *Cache) Load(agentID string, info SessionInfo) ([]Entry, error) {
 		c.order = c.order[1:]
 		delete(c.items, oldest)
 	}
-	return entries, nil
+	return copyEntries(entries), nil
+}
+
+// copyEntries duplicates the entry slice and each entry's tool-call slice.
+func copyEntries(entries []Entry) []Entry {
+	if entries == nil {
+		return nil
+	}
+	out := make([]Entry, len(entries))
+	for i, entry := range entries {
+		if entry.Tools != nil {
+			tools := make([]ToolCall, len(entry.Tools))
+			copy(tools, entry.Tools)
+			entry.Tools = tools
+		}
+		out[i] = entry
+	}
+	return out
 }
 
 func (c *Cache) touch(key string) {
@@ -144,7 +163,9 @@ func transcriptSignature(info SessionInfo) string {
 
 func fileSignature(path string) string {
 	if stat, err := os.Stat(path); err == nil {
-		return fmt.Sprintf("%d:%d", stat.Size(), stat.ModTime().UnixMilli())
+		// Nanosecond resolution: two appends within the same millisecond
+		// (same size, same ms) must not alias to the cached transcript.
+		return fmt.Sprintf("%d:%d", stat.Size(), stat.ModTime().UnixNano())
 	}
 	return "-"
 }
@@ -157,6 +178,14 @@ var (
 
 // ScanMaxTranscriptLine bounds one JSONL record; tool results can be large.
 const ScanMaxTranscriptLine = 32 * 1024 * 1024
+
+// WalkJSONLFile streams a JSONL file line by line and feeds each parsed
+// object to visit. Malformed lines are skipped, a single record is capped at
+// ScanMaxTranscriptLine bytes, and open/read failures are returned. Usage
+// accounting streams through this instead of reading whole transcripts.
+func WalkJSONLFile(file string, visit func(map[string]any)) error {
+	return scanJSONLines(file, visit)
+}
 
 func scanJSONLines(file string, visit func(map[string]any)) error {
 	f, err := os.Open(file)

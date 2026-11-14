@@ -45,11 +45,7 @@ func scanWorkbuddySessionUsage(session SessionInfo) (*workbuddySessionUsage, err
 	}
 	tally := &SessionTally{}
 	records := []UsageRecord{}
-	lines, err := ReadAllLinesE(*session.FilePath)
-	if err != nil {
-		return nil, err
-	}
-	WalkLines(lines, func(obj map[string]any) {
+	if err := WalkJSONLFile(*session.FilePath, func(obj map[string]any) {
 		timestamp := 0.0
 		if f, ok := AsNumber(obj["timestamp"]); ok {
 			timestamp = math.Floor(f)
@@ -97,7 +93,9 @@ func scanWorkbuddySessionUsage(session SessionInfo) (*workbuddySessionUsage, err
 		}
 		record.ApplyInterval(tally.TakeUntil(timestamp))
 		records = append(records, record)
-	})
+	}); err != nil {
+		return nil, err
+	}
 	if len(records) > 0 {
 		records[len(records)-1].MergeInterval(tally.Flush())
 	}
