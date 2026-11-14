@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -28,7 +29,7 @@ func LoadTranscript(agentID string, info SessionInfo) ([]Entry, error) {
 	case "pi":
 		return parsePiTranscript(info)
 	case "cindy":
-		return parsePiTranscript(info)
+		return parseCindyTranscript(info)
 	case "kimi":
 		return parseKimiTranscript(info)
 	case "kimi-code":
@@ -46,6 +47,18 @@ func LoadTranscript(agentID string, info SessionInfo) ([]Entry, error) {
 	default:
 		return parseGenericTranscript(info)
 	}
+}
+
+// parseCindyTranscript dispatches by transcript shape: profile rows can point
+// either at the embedded Pi store or at a Codex rollout file.
+func parseCindyTranscript(info SessionInfo) ([]Entry, error) {
+	if info.FilePath != nil && strings.Contains(filepath.ToSlash(*info.FilePath), "/.claude/projects/") {
+		return parseClaudeTranscript(info)
+	}
+	if info.FilePath != nil && strings.HasPrefix(filepath.Base(*info.FilePath), "rollout-") {
+		return parseCodexTranscript(info)
+	}
+	return parsePiTranscript(info)
 }
 
 type cacheItem struct {
