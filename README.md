@@ -164,12 +164,10 @@ model rates, curated per provider. Refreshes only touch that JSON file;
 ## Development
 
 ```sh
-make check   # build + vet + test (the same commands CI runs)
-go test -race ./...
+make check   # build + vet + test + race
 ```
 
-CI runs build, vet and tests on Linux, macOS and Windows, with the race
-detector on Linux. Comments, CLI help and diagnostics are written in English.
+Comments, CLI help and diagnostics are written in English.
 
 ## License
 

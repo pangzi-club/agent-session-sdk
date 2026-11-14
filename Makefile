@@ -12,7 +12,7 @@ build-cli: ## Build the agent-session-sdk CLI binary into ./bin
 test: ## Run tests (no cgo)
 	CGO_ENABLED=0 go test ./...
 
-test-race: ## Run tests with the race detector (as CI does on Linux)
+test-race: ## Run tests with the race detector
 	go test -race ./...
 
 vet: ## Run go vet
@@ -21,7 +21,7 @@ vet: ## Run go vet
 fmt: ## Format all Go sources
 	gofmt -w ./*.go ./cmd/agent-session-sdk/*.go
 
-check: build vet test test-race ## Run the full pre-commit check (mirrors CI)
+check: build vet test test-race ## Run the full pre-commit check
 
 tidy: ## Tidy go.mod dependencies
 	go mod tidy
