@@ -1,6 +1,6 @@
 package agentsession
 
-// cindy.go reads Cindy's local profile database and its embedded Pi or Codex
+// cindy.go reads Cindy's local profile database and its Pi, Codex or Claude Code
 // session transcripts. Sessions are stored in <CindyGlobal>/cindy-<dataOwnerId>.db,
 // while visible turns live in the transcript file recorded by sdk_session_id.
 // The owner directory is keyed by the first 20 hex characters of
@@ -48,13 +48,14 @@ func ScanCindy(agentDir string) ([]SessionInfo, error) {
 		updatedAt := FirstOr(createdAt, AsEpochMs(row["updated_at"]))
 		file := cindyTranscript(agentDir, workspace, AsString(row["agent_kind"]), row["sdk_session_id"])
 		out = append(out, SessionInfo{
-			ID:        *id,
-			Workspace: *workspace,
-			Title:     ToTitle(row["title"]),
-			CreatedAt: createdAt,
-			UpdatedAt: updatedAt,
-			SizeBytes: FileSize(file),
-			FilePath:  filePathOrNil(file),
+			transcriptFormat: cindyTranscriptFormat(FirstOr("", AsString(row["agent_kind"])), FirstOr("", AsString(row["sdk_session_id"]))),
+			ID:               *id,
+			Workspace:        *workspace,
+			Title:            ToTitle(row["title"]),
+			CreatedAt:        createdAt,
+			UpdatedAt:        updatedAt,
+			SizeBytes:        FileSize(file),
+			FilePath:         filePathOrNil(file),
 		})
 	}
 	return out, nil
@@ -135,26 +136,70 @@ func cindyTranscript(agentDir string, workspace, agentKind *string, value any) s
 	return *file
 }
 
-// cindyClaudeTranscript maps a stored Claude session ID onto the JSONL file in
-// the user's shared Claude store. Claude encodes workspace paths by replacing
-// separators with hyphens and does not escape literal hyphens, so the reverse
-// decode used elsewhere is ambiguous.
+func cindyTranscriptFormat(agentKind, file string) string {
+	if filepath.IsAbs(file) {
+		return "pi"
+	}
+	switch agentKind {
+	case "cc":
+		return "claude"
+	case "codex":
+		return "codex"
+	case "pi":
+		return "pi"
+	default:
+		return ""
+	}
+}
+
+// cindyClaudeTranscript follows Cindy's Claude config candidates. The current
+// CLI writes to CLAUDE_CONFIG_DIR or ~/.claude; claude-home is the legacy dev
+// fallback. A session may move with its workspace, so a direct miss is followed
+// by a filename lookup.
 func cindyClaudeTranscript(agentDir string, workspace *string, sessionID string) string {
 	if workspace == nil || *workspace == "" || sessionID == "" {
 		return ""
 	}
 	home := filepath.Dir(filepath.Dir(filepath.Dir(agentDir)))
-	expectedDir := strings.ReplaceAll(filepath.ToSlash(*workspace), "/", "-")
-	for _, projectDir := range ListDirs(filepath.Join(home, ".claude", "projects")) {
-		if filepath.Base(projectDir) != expectedDir {
-			continue
-		}
-		file := filepath.Join(projectDir, sessionID+".jsonl")
-		if info, err := os.Stat(file); err == nil && info.Mode().IsRegular() {
+	configDirs := []string{}
+	if dir := os.Getenv("CLAUDE_CONFIG_DIR"); dir != "" {
+		configDirs = append(configDirs, dir)
+	}
+	configDirs = append(configDirs, filepath.Join(home, ".claude"), filepath.Join(agentDir, "claude-home"))
+	for _, configDir := range configDirs {
+		root := filepath.Join(configDir, "projects")
+		file := filepath.Join(root, cindyClaudeProjectKey(*workspace), sessionID+".jsonl")
+		if regularFile(file) {
 			return file
+		}
+		for _, candidate := range ListFiles(root, ".jsonl", true) {
+			if filepath.Base(candidate) == sessionID+".jsonl" {
+				return candidate
+			}
 		}
 	}
 	return ""
+}
+
+func cindyClaudeProjectKey(workspace string) string {
+	var key strings.Builder
+	for _, r := range filepath.ToSlash(workspace) {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
+			key.WriteRune(r)
+		} else {
+			key.WriteByte('-')
+		}
+	}
+	value := key.String()
+	if len(value) > 200 {
+		value = value[:200]
+	}
+	return value
+}
+
+func regularFile(file string) bool {
+	info, err := os.Stat(file)
+	return err == nil && info.Mode().IsRegular()
 }
 
 // cindyCodexTranscript maps a stored Codex session ID onto the rollout file in

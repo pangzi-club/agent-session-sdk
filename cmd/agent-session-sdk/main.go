@@ -17,7 +17,7 @@ import (
 	"github.com/pangzi-club/agent-session-sdk"
 )
 
-const helpText = `agent-session-sdk — session / usage / transcript scanner for local agent stores
+const helpTemplate = `agent-session-sdk — session / usage / transcript scanner for local agent stores
 
 Usage:
   agent-session-sdk <sessions|usage|summary|transcript|search> [flags]
@@ -41,10 +41,9 @@ Flags:
   --offset <n>     Indexed sessions/search only: skip leading results
   --pretty         Indent output for readability
 
-Session scanning covers 16 agents: claude codex gemini cursor opencode zcode
-workbuddy pi dsh grok qoder qoder-cn kimi kimi-code hermes. Usage / summary cover the
-agents with local usage data: claude codex zcode workbuddy dsh pi opencode grok
-qoder qoder-cn hermes. Qoder / qoder-cn tokens are heuristically reconstructed
+Session scanning covers %d agents: %s.
+Usage / summary cover the agents with local usage data: %s.
+Qoder / qoder-cn tokens are heuristically reconstructed
 from context ratio + reply length, and records keep credits for cost
 estimation — free requests included.
 
@@ -54,8 +53,10 @@ Examples:
   agent-session-sdk summary --agent codex,claude
   agent-session-sdk transcript --agent claude --session <sessionId> --pretty
   agent-session-sdk sessions --index --agent codex --pretty
-  agent-session-sdk search 登录 --agent claude --limit 20
 `
+
+var helpText = fmt.Sprintf(helpTemplate, len(agentsession.KnownAgentIDs()),
+	strings.Join(agentsession.KnownAgentIDs(), " "), strings.Join(agentsession.UsageAgentIDs(), " "))
 
 type cliOptions struct {
 	home      string

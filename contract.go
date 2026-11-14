@@ -20,6 +20,8 @@ package agentsession
 
 // SessionInfo aligns with SessionInfo in ipc-contract.ts.
 type SessionInfo struct {
+	transcriptFormat string
+
 	ID         string      `json:"id"`
 	Workspace  string      `json:"workspace"`
 	Title      *string     `json:"title"`

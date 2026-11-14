@@ -42,7 +42,7 @@ usage module (`usage.go`); gemini, cursor, kimi and kimi-code have none.
 | `cursor` | `.cursor` | `parseCursorTranscript` | no | [cursor.md](cursor.md) |
 | `opencode` | `.local/share/opencode` | `parseSessionDBTranscript` | yes | [opencode.md](opencode.md) |
 | `zcode` | `.zcode` | `parseSessionDBTranscript` | yes | [zcode.md](zcode.md) |
-| `cindy` | `Library/Application Support/CindyGlobal` | `parsePiTranscript` | yes | [cindy.md](cindy.md) |
+| `cindy` | `Library/Application Support/CindyGlobal` | `parseCindyTranscript` | yes | [cindy.md](cindy.md) |
 | `workbuddy` | `.workbuddy` | `parseWorkbuddyTranscript` | yes | [workbuddy.md](workbuddy.md) |
 | `pi` | `.pi` | `parsePiTranscript` | yes | [pi.md](pi.md) |
 | `dsh` | `.dsh` | `parseDshTranscript` | yes | [dsh.md](dsh.md) |

@@ -3,11 +3,6 @@
 How Cindy stores local sessions, and how this SDK reads them without crossing
 its account boundary.
 
-Cindy is a split store. Session metadata lives in one profile SQLite database;
-visible turns, tool events and provider usage live in the Pi JSONL file named by
-that row's `sdk_session_id`. The owner path is not the transcript directory: it
-is a namespace for bot files, memories and dialogue workspaces.
-
 ## At a glance
 
 | Property | Value |
@@ -15,10 +10,15 @@ is a namespace for bot files, memories and dialogue workspaces.
 | Agent id | `cindy` |
 | Display name | Cindy |
 | Store directory | `~/Library/Application Support/CindyGlobal` |
-| Session scanner | `ScanCindy` (`cindy.go:18`) |
-| Transcript loader | `parsePiTranscript` (`transcript_cursor.go:27`) |
-| Usage module | `scanCindyUsage` (`usage_cindy.go:9`) |
-| Store format | SQLite session metadata + Pi-format JSONL transcripts |
+| Session scanner | `ScanCindy` (`cindy.go`) |
+| Transcript loader | `parseCindyTranscript` (`transcript.go`) |
+| Usage module | `scanCindyUsage` (`usage_cindy.go`) |
+| Store format | SQLite session metadata + engine-specific JSONL transcripts |
+
+Cindy supports three engines. `sessions.agent_kind` identifies `pi`, `codex` or
+`cc` (Claude Code), and `sdk_session_id` supplies a path for legacy Pi rows or
+an engine-native session ID for newer rows. The owner path is a namespace for
+bot files, memories and dialogue workspaces, not the transcript directory.
 
 ## On-disk layout
 
@@ -26,57 +26,82 @@ is a namespace for bot files, memories and dialogue workspaces.
 ~/Library/Application Support/CindyGlobal/
   cindy-<dataOwnerId>.db                    # active profile's session metadata
   owners/<ownerKey>/                        # account-scoped workspace namespace
-  pi-agent-home/sessions/*.jsonl            # transcript and usage bodies
+  pi-agent-home/sessions/*.jsonl            # legacy Pi transcript and usage
+  codex-home/sessions/YYYY/MM/DD/*.jsonl    # embedded Codex rollouts
+  claude-home/projects/<key>/<id>.jsonl     # legacy dev Claude fallback
+
+$CLAUDE_CONFIG_DIR/projects/<key>/<id>.jsonl # explicit Claude config, if set
+~/.claude/projects/<key>/<id>.jsonl          # current shared Claude store
 ```
 
 `ownerKey` is the first 20 lowercase hex characters of
-`SHA-256(dataOwnerId)`. For example, data owner `abc` hashes to a directory
-named `ba7816bf8f01cfea414140de5dae2223b00361a3`, not to `abc`. This mapping is
-implemented by `cindyOwnerDirName` (`cindy.go:106`).
-
-`activeCindyProfile` (`cindy.go:66`) scans top-level `cindy-*.db` files, picks
-the one with the newest database/WAL activity, strips its `cindy-` prefix and
-`.db` suffix to recover `dataOwnerId`, and accepts it only when the matching
-owner directory exists. Selecting one profile prevents sessions from another
-signed-in account from leaking into the Cindy agent.
+`SHA-256(dataOwnerId)`. `cindyOwnerDirName` implements this mapping.
+`activeCindyProfile` selects the top-level profile with the newest database/WAL
+activity and requires its owner directory. This avoids merging accounts after
+an account switch.
 
 ## Session scanning
 
 The scanner opens the selected database read-only, reads `sessions` ordered by
 `updated_at DESC`, and skips rows with non-null `hidden_at` or status
-`deleted` / `hidden` (`isCindyHidden`, `cindy.go:111`).
+`deleted` / `hidden`.
 
 | Field | Source |
 |---|---|
-| `ID` | `sessions.id` |
-| `Workspace` | `sessions.working_dir` (raw path) |
+| `ID` | Cindy's `sessions.id`, never the engine-native ID |
+| `Workspace` | `sessions.working_dir` |
 | `Title` | `ToTitle(sessions.title)` |
 | `CreatedAt` / `UpdatedAt` | `sessions.created_at` / `updated_at` as epoch ms |
-| `FilePath` | raw `sessions.sdk_session_id` path, when present |
-| `SizeBytes` | size of the Pi JSONL file, or `0` when missing |
+| `FilePath` | Resolved engine transcript path |
+| `SizeBytes` | Transcript file size, or `0` when missing |
+| Internal transcript format | Derived from `agent_kind`; persisted in the derived session index, not emitted as JSON |
 
-The scanner deliberately keeps Cindy's `sessions.id`, not Pi's internal session
-ID, so transcripts and usage aggregates remain keyed by the Cindy session.
+Absolute Pi paths are retained, including older rows whose `agent_kind` is
+`cc`. Relative Codex IDs are matched against the embedded rollout filename.
+Claude paths use the workspace and native session ID: its project key replaces
+non-alphanumeric characters with `-` and is limited to 200 bytes. The SDK checks
+`CLAUDE_CONFIG_DIR`, `~/.claude`, then Cindy's legacy `claude-home`; a direct
+miss falls back to a filename lookup to account for moved sessions.
 
 ## Transcript and usage
 
-Cindy's transcript file uses Pi's JSONL event shape. `LoadTranscript` routes
-`cindy` to `parsePiTranscript`, which emits user/assistant text, reasoning and
-tool calls from `message` events. `scanCindyUsage` reuses the shared Pi session
-extractor through `scanPiSessionUsage` (`usage_pi.go:44`), replacing only the
-record's `AgentID` with `cindy`.
+The engine recorded during scanning is authoritative; the parser does not infer
+format from a filename. The session index stores this metadata and its scanner
+version invalidates older derived rows.
 
-Usage mapping therefore follows Pi: `message.usage.input`, `.output`,
-`.cacheRead` and `.cacheWrite` map directly to the record fields. Prompts, tool
-calls and active time are inferred with the same session tally used by Pi.
+| Engine | Transcript | Usage |
+|---|---|---|
+| Pi / legacy absolute path | `parsePiTranscript` | `scanPiSessionUsage`: direct `message.usage` token fields |
+| Codex | `parseCodexTranscript` | `scanCodexUsageRecords`: deltas of cumulative `token_count` totals |
+| Claude Code | `parseClaudeTranscript` | `scanClaudeUsageRecords`: per-turn `message.usage` token fields |
+
+The shared engine implementations preserve their native model, prompt, tool and
+active-time semantics. Output records replace only `SessionID` and `AgentID`
+with Cindy's profile ID and `cindy`. A missing transcript contributes session
+metadata with no usage records; an unknown engine returns an explicit error
+rather than silently applying Pi semantics.
+
+See [pi.md](pi.md), [codex.md](codex.md) and [claude.md](claude.md) for each
+engine's event mapping and aggregation rules.
 
 ## Quirks
 
-- `owners/<ownerKey>` normally contains empty per-dialogue directories; it is
-  the account namespace, not the message store.
 - Multiple `cindy-*.db` files can coexist after account switches. The SDK uses
-  mtime to identify the recently active profile; it does not merge profiles.
-- A missing or no-longer-present Pi JSONL still emits the metadata row, with the
-  stored transcript path and zero size.
-- The SQLite file may be open while Cindy is running. Like the other SQLite
-  agents, this SDK opens it read-only with a short busy timeout.
+  database/WAL activity to identify the recently active profile; it does not
+  merge profiles.
+- A missing transcript still emits the metadata row with zero size.
+- A Claude workspace move can change the project key, so direct-path lookup is
+  not the only discovery mechanism.
+- The SQLite file may be open while Cindy is running. The SDK opens it
+  read-only with a short busy timeout.
+
+## Source map
+
+| Topic | Location |
+|---|---|
+| Profile and session discovery | `cindy.go` (`ScanCindy`, `cindyTranscript`) |
+| Claude path candidates | `cindy.go` (`cindyClaudeTranscript`) |
+| Engine-specific transcript dispatch | `transcript.go` (`parseCindyTranscript`) |
+| Engine-specific usage dispatch | `usage_cindy.go` (`scanCindySessionUsage`) |
+| Shared usage implementations | `usage_pi.go`, `usage_codex.go`, `usage_claude.go` |
+| Indexed format persistence | `index.go` (`querySessions`, `replaceAgentSessions`) |

@@ -14,28 +14,20 @@ type usageModuleResult struct {
 	records  []UsageRecord
 }
 
-type usageModule struct {
-	id        string
-	name      string
-	directory string
-	scan      func(string) (*usageModuleResult, error)
-}
-
-// usageModules mirrors the USAGE_MODULES order in usage/scan.ts.
-var usageModules = []usageModule{
-	{id: "claude", name: "Claude Code", directory: ".claude", scan: scanClaudeUsage},
-	{id: "codex", name: "Codex", directory: ".codex", scan: scanCodexUsage},
-	{id: "zcode", name: "ZCode", directory: ".zcode", scan: scanZcodeUsage},
-	{id: "workbuddy", name: "WorkBuddy", directory: ".workbuddy", scan: scanWorkbuddyUsage},
-	{id: "dsh", name: "Deepseek Harness", directory: ".dsh", scan: scanDshUsage},
-	{id: "pi", name: "Pi", directory: ".pi", scan: scanPiUsage},
-	{id: "cindy", name: "Cindy", directory: "Library/Application Support/CindyGlobal", scan: scanCindyUsage},
-	{id: "opencode", name: "OpenCode", directory: ".local/share/opencode", scan: scanOpenCodeUsage},
-	{id: "grok", name: "Grok Build", directory: ".grok", scan: scanGrokUsage},
-	{id: "qoder", name: "Qoder", directory: ".qoder", scan: scanQoderUsage},
-	{id: "qoder-cn", name: "Qoder CN", directory: ".qoder-cn", scan: scanQoderCnUsage},
-	{id: "hermes", name: "Hermes", directory: ".hermes", scan: scanHermesUsage},
-}
+// usageModules mirrors the USAGE_MODULES order in usage/scan.ts. Agent identity,
+// store paths and capabilities live in registry.go.
+var usageModules = func() []agentDef {
+	modules := []agentDef{}
+	for _, id := range []string{"claude", "codex", "zcode", "workbuddy", "dsh", "pi", "cindy", "opencode", "grok", "qoder", "qoder-cn", "hermes"} {
+		for _, def := range agents {
+			if def.id == id {
+				modules = append(modules, def)
+				break
+			}
+		}
+	}
+	return modules
+}()
 
 // ScanAllUsage mirrors scanAllUsage in usage/scan.ts: each module is fault
 // isolated (a failure counts as empty — that agent contributes no sessions or
@@ -51,7 +43,7 @@ func ScanAllUsage(home string) UsageScan {
 		go func(i int) {
 			defer wg.Done()
 			module := usageModules[i]
-			if result, err := module.scan(filepath.Join(home, module.directory)); err == nil {
+			if result, err := module.usageScan(filepath.Join(home, module.directory)); err == nil {
 				results[i] = result
 			}
 		}(i)

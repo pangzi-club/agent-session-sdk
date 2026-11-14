@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -49,16 +48,19 @@ func LoadTranscript(agentID string, info SessionInfo) ([]Entry, error) {
 	}
 }
 
-// parseCindyTranscript dispatches by transcript shape: profile rows can point
-// either at the embedded Pi store or at a Codex rollout file.
+// parseCindyTranscript uses the engine recorded in Cindy's profile, rather
+// than guessing from a user-visible filename.
 func parseCindyTranscript(info SessionInfo) ([]Entry, error) {
-	if info.FilePath != nil && strings.Contains(filepath.ToSlash(*info.FilePath), "/.claude/projects/") {
+	switch info.transcriptFormat {
+	case "claude":
 		return parseClaudeTranscript(info)
-	}
-	if info.FilePath != nil && strings.HasPrefix(filepath.Base(*info.FilePath), "rollout-") {
+	case "codex":
 		return parseCodexTranscript(info)
+	case "pi":
+		return parsePiTranscript(info)
+	default:
+		return nil, fmt.Errorf("session %q has unsupported Cindy transcript format %q", info.ID, info.transcriptFormat)
 	}
-	return parsePiTranscript(info)
 }
 
 type cacheItem struct {

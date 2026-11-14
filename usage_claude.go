@@ -38,6 +38,17 @@ func scanClaudeProjectUsage(projectDir string) []UsageRecord {
 }
 
 func scanClaudeFileUsage(file string) []UsageRecord {
+	records, _ := scanClaudeUsageRecords(file, "", "claude")
+	return records
+}
+
+// scanClaudeSessionUsage lets embedded Claude stores replace the native session
+// identity without changing token semantics.
+func scanClaudeSessionUsage(session SessionInfo, agentID string) ([]UsageRecord, error) {
+	return scanClaudeUsageRecords(*session.FilePath, session.ID, agentID)
+}
+
+func scanClaudeUsageRecords(file, sessionID, agentID string) ([]UsageRecord, error) {
 	lines := ReadAllLines(file)
 	tally := &SessionTally{}
 	records := []UsageRecord{}
@@ -81,13 +92,18 @@ func scanClaudeFileUsage(file string) []UsageRecord {
 		if usage == nil {
 			return
 		}
-		sessionID := AsString(obj["sessionId"])
-		if sessionID == nil || *sessionID == "" {
+		session := sessionID
+		if session == "" {
+			if id := AsString(obj["sessionId"]); id != nil {
+				session = *id
+			}
+		}
+		if session == "" {
 			return
 		}
 		record := UsageRecord{
-			SessionID:        *sessionID,
-			AgentID:          "claude",
+			SessionID:        session,
+			AgentID:          agentID,
 			Model:            AsString(message["model"]),
 			Timestamp:        *timestamp,
 			InputTokens:      AsTokenCount(usage["input_tokens"]),
@@ -101,7 +117,7 @@ func scanClaudeFileUsage(file string) []UsageRecord {
 	if len(records) > 0 {
 		records[len(records)-1].MergeInterval(tally.Flush())
 	}
-	return records
+	return records, nil
 }
 
 // claudeIsUserPrompt mirrors isUserPrompt from usage/claude.ts:

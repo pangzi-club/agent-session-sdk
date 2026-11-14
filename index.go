@@ -18,7 +18,7 @@ import (
 
 const (
 	sessionIndexSchemaVersion  = 1
-	sessionIndexScannerVersion = 1
+	sessionIndexScannerVersion = 2
 )
 
 // SessionIndex is a derived SQLite index over an effective home directory. The
@@ -244,7 +244,7 @@ func (index *SessionIndex) querySessions(query SessionIndexQuery) ([]indexedSess
 		where = append(where, "(s.title LIKE ? ESCAPE '\\' OR s.workspace LIKE ? ESCAPE '\\' OR s.id LIKE ? ESCAPE '\\' OR s.agent_id LIKE ? ESCAPE '\\')")
 		args = append(args, pattern, pattern, pattern, pattern)
 	}
-	statement := "SELECT s.agent_id, s.id, s.workspace, s.title, s.blank, s.created_at, s.updated_at, s.size_bytes, s.file_path, s.token_usage FROM sessions s"
+	statement := "SELECT s.agent_id, s.id, s.workspace, s.title, s.blank, s.created_at, s.updated_at, s.size_bytes, s.file_path, s.token_usage, s.transcript_format FROM sessions s"
 	if len(where) != 0 {
 		statement += " WHERE " + strings.Join(where, " AND ")
 	}
@@ -264,13 +264,15 @@ func (index *SessionIndex) querySessions(query SessionIndexQuery) ([]indexedSess
 		var item indexedSession
 		var title, filePath, tokenUsage *string
 		var blank *bool
+		var transcriptFormat string
 		if err := rows.Scan(&item.agentID, &item.session.ID, &item.session.Workspace,
 			&title, &blank, &item.session.CreatedAt, &item.session.UpdatedAt,
-			&item.session.SizeBytes, &filePath, &tokenUsage); err != nil {
+			&item.session.SizeBytes, &filePath, &tokenUsage, &transcriptFormat); err != nil {
 			return nil, err
 		}
 		item.session.Title = title
 		item.session.Blank = blank
+		item.session.transcriptFormat = transcriptFormat
 		if filePath != nil && *filePath != "" {
 			item.session.FilePath = filePath
 		}
@@ -324,10 +326,10 @@ func (index *SessionIndex) replaceAgentSessions(agentID, signature string, sessi
 			blank = *session.Blank
 		}
 		if _, err := tx.Exec(`INSERT INTO sessions
-			(agent_id, id, workspace, title, blank, created_at, updated_at, size_bytes, file_path, token_usage)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			(agent_id, id, workspace, title, blank, created_at, updated_at, size_bytes, file_path, token_usage, transcript_format)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			agentID, session.ID, session.Workspace, session.Title, blank,
-			session.CreatedAt, session.UpdatedAt, session.SizeBytes, filePath, tokenUsage); err != nil {
+			session.CreatedAt, session.UpdatedAt, session.SizeBytes, filePath, tokenUsage, session.transcriptFormat); err != nil {
 			return err
 		}
 	}
@@ -385,6 +387,7 @@ func ensureSessionIndexSchema(db *sql.DB) error {
 			size_bytes REAL NOT NULL,
 			file_path TEXT,
 			token_usage TEXT,
+			transcript_format TEXT NOT NULL DEFAULT '',
 			PRIMARY KEY(agent_id, id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS sessions_updated_at ON sessions(updated_at DESC)`,

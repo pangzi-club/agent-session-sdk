@@ -7,6 +7,26 @@ import (
 	"testing"
 )
 
+func TestCindyClaudeTranscriptCandidates(t *testing.T) {
+	home := t.TempDir()
+	globalDir := filepath.Join(home, "Library", "Application Support", "CindyGlobal")
+	workspace := "/tmp/work.space"
+	custom := filepath.Join(home, "custom-claude")
+	t.Setenv("CLAUDE_CONFIG_DIR", custom)
+	file := filepath.Join(custom, "projects", "-tmp-work-space", "claude-id.jsonl")
+	writeFile(t, file, "{}\n")
+	if got := cindyClaudeTranscript(globalDir, &workspace, "claude-id"); got != file {
+		t.Fatalf("explicit Claude config path = %q, want %q", got, file)
+	}
+
+	legacy := filepath.Join(globalDir, "claude-home", "projects", "moved-project", "legacy-id.jsonl")
+	writeFile(t, legacy, "{}\n")
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	if got := cindyClaudeTranscript(globalDir, &workspace, "legacy-id"); got != legacy {
+		t.Fatalf("legacy Claude fallback = %q, want %q", got, legacy)
+	}
+}
+
 func TestScanCindy(t *testing.T) {
 	home := t.TempDir()
 	globalDir := filepath.Join(home, "Library", "Application Support", "CindyGlobal")
@@ -15,7 +35,7 @@ func TestScanCindy(t *testing.T) {
 	ownerDir := filepath.Join(globalDir, "owners", cindyOwnerDirName(dataOwnerID))
 	transcript := filepath.Join(globalDir, "pi-agent-home", "sessions", "pi-session.jsonl")
 	codexTranscript := filepath.Join(globalDir, "codex-home", "sessions", "2026", "11", "14", "rollout-codex-internal.jsonl")
-	claudeTranscript := filepath.Join(home, ".claude", "projects", "-tmp-project", "claude-internal.jsonl")
+	claudeTranscript := filepath.Join(home, ".claude", "projects", "--tmp-project", "claude-internal.jsonl")
 
 	writeFile(t, transcript, strings.Join([]string{
 		`{"type":"session","version":3,"id":"pi-internal","timestamp":"2026-11-12T05:31:02.066Z","cwd":"` + ownerDir + `"}`,
@@ -24,11 +44,13 @@ func TestScanCindy(t *testing.T) {
 	}, "\n"))
 	writeFile(t, claudeTranscript, strings.Join([]string{
 		`{"type":"user","timestamp":"2026-11-14T03:00:00.000Z","cwd":"/tmp/project","message":{"role":"user","content":[{"type":"text","text":"Check Claude"}]}}`,
-		`{"type":"assistant","timestamp":"2026-11-14T03:00:01.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Done."}]}}`,
+		`{"type":"assistant","timestamp":"2026-11-14T03:00:01.000Z","sessionId":"claude-internal","message":{"role":"assistant","model":"claude-test","content":[{"type":"text","text":"Done."}],"usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":30,"cache_creation_input_tokens":4}}}`,
 	}, "\n"))
 	writeFile(t, codexTranscript, strings.Join([]string{
+		`{"timestamp":"2026-11-14T02:00:00.000Z","type":"turn_context","payload":{"model":"codex-test"}}`,
 		`{"timestamp":"2026-11-14T02:00:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Implement it"}]}}`,
 		`{"timestamp":"2026-11-14T02:00:01.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done."}]}}`,
+		`{"timestamp":"2026-11-14T02:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"output_tokens":15,"cached_input_tokens":40,"cache_write_input_tokens":3}}}}`,
 	}, "\n"))
 	writeFile(t, filepath.Join(ownerDir, "boundary"), "owner")
 
@@ -64,7 +86,7 @@ func TestScanCindy(t *testing.T) {
 		t.Fatalf("%d sessions, want 3", len(sessions))
 	}
 	claudeSession := sessions[0]
-	if claudeSession.ID != "s3" || claudeSession.Workspace != "/tmp/project" ||
+	if claudeSession.ID != "s3" || claudeSession.Workspace != "/tmp/project" || claudeSession.transcriptFormat != "claude" ||
 		claudeSession.Title == nil || *claudeSession.Title != "Claude title" ||
 		claudeSession.SizeBytes == 0 ||
 		claudeSession.FilePath == nil || *claudeSession.FilePath != claudeTranscript {
@@ -115,13 +137,42 @@ func TestScanCindy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(usage.records) != 1 {
-		t.Fatalf("%d usage records, want 1", len(usage.records))
+	if len(usage.records) != 3 {
+		t.Fatalf("%d usage records, want one per engine", len(usage.records))
 	}
-	record := usage.records[0]
-	if record.SessionID != "s1" || record.AgentID != "cindy" ||
+	bySession := map[string]UsageRecord{}
+	for _, record := range usage.records {
+		bySession[record.SessionID] = record
+	}
+	if record := bySession["s3"]; record.AgentID != "cindy" || record.InputTokens != 100 || record.OutputTokens != 20 ||
+		record.CacheReadTokens != 30 || record.CacheWriteTokens != 4 || record.Model == nil || *record.Model != "claude-test" {
+		t.Fatalf("Claude usage record %+v", record)
+	}
+	if record := bySession["s2"]; record.AgentID != "cindy" || record.InputTokens != 60 || record.OutputTokens != 15 ||
+		record.CacheReadTokens != 40 || record.CacheWriteTokens != 3 || record.Model == nil || *record.Model != "codex-test" {
+		t.Fatalf("Codex usage record %+v", record)
+	}
+	record := bySession["s1"]
+	if record.AgentID != "cindy" ||
 		record.InputTokens != 10 || record.OutputTokens != 5 ||
 		record.CacheReadTokens != 3 || record.CacheWriteTokens != 2 {
 		t.Fatalf("usage record %+v, want Cindy session usage", record)
+	}
+
+	index, err := OpenSessionIndex(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer index.Close()
+	if _, err := index.Refresh("cindy"); err != nil {
+		t.Fatal(err)
+	}
+	indexed, err := index.Get("cindy", "s2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err = LoadTranscript("cindy", *indexed)
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("indexed Codex transcript = %+v, %v", entries, err)
 	}
 }

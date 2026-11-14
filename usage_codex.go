@@ -51,6 +51,18 @@ func scanCodexFileUsage(file string) (*codexFileUsage, error) {
 	if err != nil || session == nil {
 		return nil, err
 	}
+	records, err := scanCodexUsageRecords(file, session.ID, "codex")
+	if err != nil {
+		return nil, err
+	}
+	return &codexFileUsage{session: *session, records: records}, nil
+}
+
+func scanCodexSessionUsage(session SessionInfo, agentID string) ([]UsageRecord, error) {
+	return scanCodexUsageRecords(*session.FilePath, session.ID, agentID)
+}
+
+func scanCodexUsageRecords(file, sessionID, agentID string) ([]UsageRecord, error) {
 	lines := ReadAllLines(file)
 	tally := &SessionTally{}
 	records := []UsageRecord{}
@@ -120,8 +132,8 @@ func scanCodexFileUsage(file string) (*codexFileUsage, error) {
 		}
 		prev = &cur
 		record := UsageRecord{
-			SessionID:        session.ID,
-			AgentID:          "codex",
+			SessionID:        sessionID,
+			AgentID:          agentID,
 			Model:            model,
 			Timestamp:        *ts,
 			InputTokens:      math.Max(0, delta.input-delta.cacheRead),
@@ -136,7 +148,7 @@ func scanCodexFileUsage(file string) (*codexFileUsage, error) {
 	if len(records) > 0 {
 		records[len(records)-1].MergeInterval(tally.Flush())
 	}
-	return &codexFileUsage{session: *session, records: records}, nil
+	return records, nil
 }
 
 // codexIsUserPrompt mirrors isUserPrompt from usage/codex.ts:

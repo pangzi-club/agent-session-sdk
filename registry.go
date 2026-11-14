@@ -13,34 +13,44 @@ type agentDef struct {
 	name      string
 	directory string
 	scan      func(string) ([]SessionInfo, error)
+	usageScan func(string) (*usageModuleResult, error)
 	canDelete bool
 }
 
 // agents is in display order, matching agent-view's AGENTS array. Agents that
 // are only detected but never scanned (qwen) are not listed.
 var agents = []agentDef{
-	{id: "claude", name: "Claude Code", directory: ".claude", scan: ScanClaude, canDelete: true},
-	{id: "codex", name: "Codex", directory: ".codex", scan: ScanCodex, canDelete: true},
+	{id: "claude", name: "Claude Code", directory: ".claude", scan: ScanClaude, usageScan: scanClaudeUsage, canDelete: true},
+	{id: "codex", name: "Codex", directory: ".codex", scan: ScanCodex, usageScan: scanCodexUsage, canDelete: true},
 	{id: "gemini", name: "Gemini CLI", directory: ".gemini", scan: ScanGemini},
 	{id: "cursor", name: "Cursor", directory: ".cursor", scan: ScanCursor},
-	{id: "opencode", name: "OpenCode", directory: ".local/share/opencode", scan: ScanOpenCode},
-	{id: "zcode", name: "ZCode", directory: ".zcode", scan: ScanZcode},
-	{id: "cindy", name: "Cindy", directory: "Library/Application Support/CindyGlobal", scan: ScanCindy},
-	{id: "workbuddy", name: "WorkBuddy", directory: ".workbuddy", scan: ScanWorkbuddy},
-	{id: "pi", name: "Pi", directory: ".pi", scan: ScanPi},
-	{id: "dsh", name: "Deepseek Harness", directory: ".dsh", scan: ScanDsh},
-	{id: "grok", name: "Grok Build", directory: ".grok", scan: ScanGrok},
-	{id: "qoder", name: "Qoder", directory: ".qoder", scan: ScanQoder},
-	{id: "qoder-cn", name: "Qoder CN", directory: ".qoder-cn", scan: ScanQoder},
+	{id: "opencode", name: "OpenCode", directory: ".local/share/opencode", scan: ScanOpenCode, usageScan: scanOpenCodeUsage},
+	{id: "zcode", name: "ZCode", directory: ".zcode", scan: ScanZcode, usageScan: scanZcodeUsage},
+	{id: "cindy", name: "Cindy", directory: "Library/Application Support/CindyGlobal", scan: ScanCindy, usageScan: scanCindyUsage},
+	{id: "workbuddy", name: "WorkBuddy", directory: ".workbuddy", scan: ScanWorkbuddy, usageScan: scanWorkbuddyUsage},
+	{id: "pi", name: "Pi", directory: ".pi", scan: ScanPi, usageScan: scanPiUsage},
+	{id: "dsh", name: "Deepseek Harness", directory: ".dsh", scan: ScanDsh, usageScan: scanDshUsage},
+	{id: "grok", name: "Grok Build", directory: ".grok", scan: ScanGrok, usageScan: scanGrokUsage},
+	{id: "qoder", name: "Qoder", directory: ".qoder", scan: ScanQoder, usageScan: scanQoderUsage},
+	{id: "qoder-cn", name: "Qoder CN", directory: ".qoder-cn", scan: ScanQoder, usageScan: scanQoderCnUsage},
 	{id: "kimi", name: "Kimi", directory: ".kimi", scan: ScanKimi},
 	{id: "kimi-code", name: "Kimi Code", directory: ".kimi-code", scan: ScanKimiCode},
-	{id: "hermes", name: "Hermes", directory: ".hermes", scan: ScanHermes},
+	{id: "hermes", name: "Hermes", directory: ".hermes", scan: ScanHermes, usageScan: scanHermesUsage},
 }
 
 // KnownAgentIDs returns every registered agent id in registry order.
 func KnownAgentIDs() []string {
 	ids := make([]string, 0, len(agents))
 	for _, def := range agents {
+		ids = append(ids, def.id)
+	}
+	return ids
+}
+
+// UsageAgentIDs returns agents with usage extraction in aggregation order.
+func UsageAgentIDs() []string {
+	ids := make([]string, 0, len(usageModules))
+	for _, def := range usageModules {
 		ids = append(ids, def.id)
 	}
 	return ids
