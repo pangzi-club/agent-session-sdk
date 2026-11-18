@@ -17,6 +17,21 @@ import (
 	"time"
 )
 
+// cindyStoreDirectory returns Cindy's store directory relative to the user
+// home, following Electron's appData convention: ~/Library/Application
+// Support on macOS, %APPDATA% (home/AppData/Roaming) on Windows and
+// ~/.config on Linux. The registry joins this with the scanned home.
+func cindyStoreDirectory(goos string) string {
+	switch goos {
+	case "windows":
+		return `AppData/Roaming/CindyGlobal`
+	case "linux":
+		return `.config/CindyGlobal`
+	default:
+		return `Library/Application Support/CindyGlobal`
+	}
+}
+
 func ScanCindy(agentDir string) ([]SessionInfo, error) {
 	database, ownerDir, err := activeCindyProfileE(agentDir)
 	if err != nil {
@@ -87,6 +102,9 @@ func activeCindyProfileE(agentDir string) (string, string, error) {
 	var database string
 	var databaseActivity time.Time
 	for _, candidate := range databases {
+		if !strings.HasPrefix(filepath.Base(candidate), "cindy-") {
+			continue
+		}
 		info, err := os.Stat(candidate)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
@@ -155,7 +173,7 @@ func cindyTranscriptE(agentDir string, workspace, agentKind *string, value any) 
 	if file == nil || *file == "" {
 		return "", nil
 	}
-	if agentKind == nil || filepath.IsAbs(*file) {
+	if agentKind == nil || cindyStoredPathIsAbsolute(*file) {
 		return *file, nil
 	}
 	switch *agentKind {
@@ -168,7 +186,7 @@ func cindyTranscriptE(agentDir string, workspace, agentKind *string, value any) 
 }
 
 func cindyTranscriptFormat(agentKind, file string) string {
-	if filepath.IsAbs(file) {
+	if cindyStoredPathIsAbsolute(file) {
 		return "pi"
 	}
 	switch agentKind {
@@ -181,6 +199,14 @@ func cindyTranscriptFormat(agentKind, file string) string {
 	default:
 		return ""
 	}
+}
+
+// cindyStoredPathIsAbsolute reports whether a stored sdk_session_id is an
+// absolute transcript path rather than an engine-native session ID. Legacy
+// rows store POSIX paths, which filepath.IsAbs rejects on Windows, so a
+// leading slash counts on every platform.
+func cindyStoredPathIsAbsolute(file string) bool {
+	return filepath.IsAbs(file) || strings.HasPrefix(file, "/")
 }
 
 // cindyClaudeTranscript follows Cindy's Claude config candidates. The current

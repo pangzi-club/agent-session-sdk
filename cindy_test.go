@@ -3,13 +3,49 @@ package agentsession
 import (
 	"database/sql"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
+// The store directory follows Electron's appData convention per platform;
+// Windows is where the previous macOS-only path made Cindy invisible.
+func TestCindyStoreDirectory(t *testing.T) {
+	if got := cindyStoreDirectory("windows"); got != `AppData/Roaming/CindyGlobal` {
+		t.Fatalf("windows store dir = %q", got)
+	}
+	if got := cindyStoreDirectory("linux"); got != `.config/CindyGlobal` {
+		t.Fatalf("linux store dir = %q", got)
+	}
+	if got := cindyStoreDirectory("darwin"); got != `Library/Application Support/CindyGlobal` {
+		t.Fatalf("darwin store dir = %q", got)
+	}
+	if cindyStoreDirectory(runtime.GOOS) != agents[6].directory {
+		t.Fatalf("registry cindy directory %q does not match cindyStoreDirectory", agents[6].directory)
+	}
+}
+
+// Legacy rows store POSIX transcript paths; on Windows filepath.IsAbs is
+// false for them, yet they must still be treated as paths, not session ids.
+func TestCindyStoredPathIsAbsolute(t *testing.T) {
+	for _, path := range []string{
+		`/Users/demo/Library/Application Support/CindyGlobal/pi-agent-home/sessions/s.jsonl`,
+		`C:\Users\demo\AppData\Roaming\CindyGlobal\pi-agent-home\sessions\s.jsonl`,
+	} {
+		if !cindyStoredPathIsAbsolute(path) {
+			t.Errorf("stored path %q not detected as absolute", path)
+		}
+	}
+	for _, id := range []string{"", "d7294fcd-bf22-4371-86a4-c9337edc2421", "codex-internal", "relative/path.jsonl"} {
+		if cindyStoredPathIsAbsolute(id) {
+			t.Errorf("session id %q misdetected as absolute path", id)
+		}
+	}
+}
+
 func TestCindyClaudeTranscriptCandidates(t *testing.T) {
 	home := t.TempDir()
-	globalDir := filepath.Join(home, "Library", "Application Support", "CindyGlobal")
+	globalDir := filepath.Join(home, filepath.FromSlash(cindyStoreDirectory(runtime.GOOS)))
 	workspace := "/tmp/work.space"
 	custom := filepath.Join(home, "custom-claude")
 	t.Setenv("CLAUDE_CONFIG_DIR", custom)
@@ -29,7 +65,7 @@ func TestCindyClaudeTranscriptCandidates(t *testing.T) {
 
 func TestScanCindy(t *testing.T) {
 	home := t.TempDir()
-	globalDir := filepath.Join(home, "Library", "Application Support", "CindyGlobal")
+	globalDir := filepath.Join(home, filepath.FromSlash(cindyStoreDirectory(runtime.GOOS)))
 	dataOwnerID := "cmwd-profile"
 	database := filepath.Join(globalDir, "cindy-"+dataOwnerID+".db")
 	ownerDir := filepath.Join(globalDir, "owners", cindyOwnerDirName(dataOwnerID))
@@ -53,6 +89,10 @@ func TestScanCindy(t *testing.T) {
 		`{"timestamp":"2026-11-14T02:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"output_tokens":15,"cached_input_tokens":40,"cache_write_input_tokens":3}}}}`,
 	}, "\n"))
 	writeFile(t, filepath.Join(ownerDir, "boundary"), "owner")
+	// A renamed backup database must not be treated as a profile candidate;
+	// its stale mtime would otherwise lose anyway, but the name check makes it
+	// deterministic.
+	writeFile(t, database+".bak.2026-11-18T06-11-29-538Z", "backup")
 
 	db, err := sql.Open("sqlite", database)
 	if err != nil {
@@ -66,6 +106,9 @@ func TestScanCindy(t *testing.T) {
 		`INSERT INTO sessions VALUES ('s2', 'Codex title', '/tmp/project', 'active', NULL, 1790000003000, 1790000004000, 'codex', 'codex-internal')`,
 		`INSERT INTO sessions VALUES ('s3', 'Claude title', '/tmp/project', 'active', NULL, 1790000005000, 1790000006000, 'cc', 'claude-internal')`,
 		`INSERT INTO sessions VALUES ('stale', 'Stale transcript', '/tmp/gone', 'active', NULL, 1789999000000, 1789999001000, 'pi', '` + filepath.Join(globalDir, "pi-agent-home", "sessions", "deleted-elsewhere.jsonl") + `')`,
+		// Windows shape: sdk_session_id stores a POSIX path that
+		// filepath.IsAbs rejects, yet it is still a transcript path.
+		`INSERT INTO sessions VALUES ('posix', 'Windows legacy path', '` + ownerDir + `', 'active', NULL, 1790000007000, 1790000008000, 'pi', '` + filepath.ToSlash(transcript) + `')`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatal(err)
@@ -83,10 +126,15 @@ func TestScanCindy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sessions) != 4 {
-		t.Fatalf("%d sessions, want 4", len(sessions))
+	if len(sessions) != 5 {
+		t.Fatalf("%d sessions, want 5", len(sessions))
 	}
-	claudeSession := sessions[0]
+	posixSession := sessions[0]
+	if posixSession.ID != "posix" || posixSession.transcriptFormat != "pi" ||
+		posixSession.FilePath == nil || filepath.Clean(*posixSession.FilePath) != filepath.Clean(transcript) {
+		t.Fatalf("session %+v, want the POSIX-stored path resolved to its transcript", posixSession)
+	}
+	claudeSession := sessions[1]
 	if claudeSession.ID != "s3" || claudeSession.Workspace != "/tmp/project" || claudeSession.transcriptFormat != "claude" ||
 		claudeSession.Title == nil || *claudeSession.Title != "Claude title" ||
 		claudeSession.SizeBytes == 0 ||
@@ -102,7 +150,7 @@ func TestScanCindy(t *testing.T) {
 		t.Fatalf("Claude entries %+v, want its visible turns", claudeEntries)
 	}
 
-	codexSession := sessions[1]
+	codexSession := sessions[2]
 	if codexSession.ID != "s2" || codexSession.Workspace != "/tmp/project" ||
 		codexSession.Title == nil || *codexSession.Title != "Codex title" ||
 		codexSession.SizeBytes == 0 ||
@@ -118,7 +166,7 @@ func TestScanCindy(t *testing.T) {
 		t.Fatalf("Codex entries %+v, want its visible prompt", codexEntries)
 	}
 
-	session := sessions[2]
+	session := sessions[3]
 	if session.ID != "s1" || session.Workspace != ownerDir ||
 		session.Title == nil || *session.Title != "Stored title" ||
 		session.CreatedAt != 1790000000000 || session.UpdatedAt != 1790000002000 ||
@@ -138,10 +186,10 @@ func TestScanCindy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(usage.sessions) != 4 {
-		t.Fatalf("%d usage sessions, want 4 (the stale-transcript row must not fail the module)", len(usage.sessions))
+	if len(usage.sessions) != 5 {
+		t.Fatalf("%d usage sessions, want 5 (the stale-transcript row must not fail the module)", len(usage.sessions))
 	}
-	if len(usage.records) != 3 {
+	if len(usage.records) != 4 {
 		t.Fatalf("%d usage records, want one per engine", len(usage.records))
 	}
 	bySession := map[string]UsageRecord{}

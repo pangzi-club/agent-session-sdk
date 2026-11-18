@@ -54,7 +54,10 @@ func TestCacheInvalidatesOnSameMillisecondRewrite(t *testing.T) {
 	home := t.TempDir()
 	file := filepath.Join(home, "sess.jsonl")
 	writeFile(t, file, claudeUserLine("first prompt", "2026-11-06T02:25:32.506Z")+"\n")
-	base := time.Now()
+	// Anchor the mtime mid-millisecond so base+200µs stays inside the same
+	// millisecond deterministically; a raw time.Now() can land within 200µs
+	// of a boundary and make the setup check flaky on Windows.
+	base := time.Now().Truncate(time.Millisecond).Add(400 * time.Microsecond)
 	if err := os.Chtimes(file, base, base); err != nil {
 		t.Fatal(err)
 	}

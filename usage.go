@@ -5,8 +5,6 @@
 package agentsession
 
 import (
-	"errors"
-	"os"
 	"path/filepath"
 	"sync"
 )
@@ -55,7 +53,7 @@ func ScanAllUsageDetailed(home string) UsageScanReport {
 			module := usageModules[i]
 			directory := filepath.Join(home, module.directory)
 			result, err := module.usageScan(directory)
-			if err != nil && !errors.Is(err, os.ErrNotExist) {
+			if err != nil && !isAbsentStore(directory, err) {
 				failures[i] = append(failures[i], AgentScanFailure{AgentID: module.id, AgentName: module.name, Directory: directory, Err: err})
 			} else {
 				results[i] = result

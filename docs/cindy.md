@@ -9,7 +9,7 @@ its account boundary.
 |---|---|
 | Agent id | `cindy` |
 | Display name | Cindy |
-| Store directory | `~/Library/Application Support/CindyGlobal` |
+| Store directory | `~/Library/Application Support/CindyGlobal` (macOS), `%APPDATA%\CindyGlobal` (Windows), `~/.config/CindyGlobal` (Linux) |
 | Session scanner | `ScanCindy` (`cindy.go`) |
 | Transcript loader | `parseCindyTranscript` (`transcript.go`) |
 | Usage module | `scanCindyUsage` (`usage_cindy.go`) |
@@ -23,7 +23,8 @@ bot files, memories and dialogue workspaces, not the transcript directory.
 ## On-disk layout
 
 ```
-~/Library/Application Support/CindyGlobal/
+~/Library/Application Support/CindyGlobal/    # macOS; %APPDATA%\CindyGlobal on
+                                                # Windows, ~/.config/CindyGlobal on Linux
   cindy-<dataOwnerId>.db                    # active profile's session metadata
   owners/<ownerKey>/                        # account-scoped workspace namespace
   pi-agent-home/sessions/*.jsonl            # legacy Pi transcript and usage
@@ -38,7 +39,11 @@ $CLAUDE_CONFIG_DIR/projects/<key>/<id>.jsonl # explicit Claude config, if set
 `SHA-256(dataOwnerId)`. `cindyOwnerDirName` implements this mapping.
 `activeCindyProfile` selects the top-level profile with the newest database/WAL
 activity and requires its owner directory. This avoids merging accounts after
-an account switch.
+an account switch. Only `cindy-*.db` files are profile candidates, so a backup
+renamed `cindy-<id>.db.bak.<timestamp>` no longer matches.
+Legacy rows store POSIX transcript paths (`/Users/...`). On Windows those fail
+`filepath.IsAbs` yet are still paths, so a leading `/` counts as absolute when
+distinguishing a stored transcript path from an engine-native session id.
 
 ## Session scanning
 
@@ -88,7 +93,10 @@ engine's event mapping and aggregation rules.
 
 - Multiple `cindy-*.db` files can coexist after account switches. The SDK uses
   database/WAL activity to identify the recently active profile; it does not
-  merge profiles.
+  merge profiles. Backup files (`cindy-<id>.db.bak.*`) are ignored.
+- The registry's store directory is platform-specific (`cindyStoreDirectory`):
+  Electron resolves `appData` to `AppData/Roaming` on Windows and `.config` on
+  Linux, so the Cindy store is not always under the macOS path.
 - A missing transcript still emits the metadata row with zero size.
 - A Claude workspace move can change the project key, so direct-path lookup is
   not the only discovery mechanism.

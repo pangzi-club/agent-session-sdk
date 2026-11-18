@@ -377,6 +377,8 @@ func DecodePathDirName(name string) *string {
 }
 
 // Tildify mirrors tildify in usage/scan.ts: shorten paths inside home to a ~/ display path.
+// Tildify shortens a path under home to ~/..., comparing both separator
+// styles so POSIX-stored paths (Cindy legacy rows) shorten on Windows too.
 func Tildify(target, home string) string {
 	if target == home {
 		return "~"
@@ -384,6 +386,14 @@ func Tildify(target, home string) string {
 	prefix := home + string(os.PathSeparator)
 	if strings.HasPrefix(target, prefix) {
 		return "~" + target[len(home):]
+	}
+	if home != "" {
+		slashHome := filepath.ToSlash(filepath.Clean(home))
+		slashTarget := filepath.ToSlash(filepath.Clean(target))
+		if slashHome != "" && slashTarget != slashHome &&
+			strings.HasPrefix(slashTarget, strings.TrimSuffix(slashHome, "/")+"/") {
+			return "~" + slashTarget[len(slashHome):]
+		}
 	}
 	return target
 }

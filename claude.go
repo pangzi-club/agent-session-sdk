@@ -12,6 +12,25 @@ import (
 	"strings"
 )
 
+// storeEntryExists reports whether a store path exists in a form that makes
+// an open failure a real error rather than absence. A regular file where a
+// directory belongs exists but cannot be opened as one; Windows reports that
+// open as ENOENT-like "cannot find the path specified", so the check walks up
+// to the deepest existing ancestor: if the agent store root itself exists,
+// the store is broken, not absent.
+func storeEntryExists(root string, path string) bool {
+	for path != "" && path != root {
+		if _, err := os.Lstat(path); err == nil {
+			return true
+		}
+		path = filepath.Dir(path)
+	}
+	if _, err := os.Lstat(root); err == nil {
+		return true
+	}
+	return false
+}
+
 // ScanClaude aligns with scanClaude.
 func ScanClaude(agentDir string) ([]SessionInfo, error) {
 	return scanClaudeProjectsDir(filepath.Join(agentDir, "projects"))
@@ -19,7 +38,7 @@ func ScanClaude(agentDir string) ([]SessionInfo, error) {
 
 func scanClaudeProjectsDir(projectsDir string) ([]SessionInfo, error) {
 	projectDirs, err := ListDirsE(projectsDir)
-	if errors.Is(err, os.ErrNotExist) {
+	if errors.Is(err, os.ErrNotExist) && !storeEntryExists(filepath.Dir(projectsDir), projectsDir) {
 		return []SessionInfo{}, nil
 	}
 	if err != nil {

@@ -479,7 +479,7 @@ func agentStoreSignature(root string) (string, error) {
 }
 
 func storeRootAbsent(root string) bool {
-	_, err := os.Stat(root)
+	_, err := os.Lstat(root)
 	return errors.Is(err, os.ErrNotExist)
 }
 

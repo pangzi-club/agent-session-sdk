@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 )
 
@@ -29,7 +30,7 @@ var agents = []agentDef{
 	{id: "cursor", name: "Cursor", directory: ".cursor", scan: ScanCursor},
 	{id: "opencode", name: "OpenCode", directory: ".local/share/opencode", scan: ScanOpenCode, usageScan: scanOpenCodeUsage},
 	{id: "zcode", name: "ZCode", directory: ".zcode", scan: ScanZcode, usageScan: scanZcodeUsage},
-	{id: "cindy", name: "Cindy", directory: "Library/Application Support/CindyGlobal", scan: ScanCindy, usageScan: scanCindyUsage},
+	{id: "cindy", name: "Cindy", directory: cindyStoreDirectory(runtime.GOOS), scan: ScanCindy, usageScan: scanCindyUsage},
 	{id: "workbuddy", name: "WorkBuddy", directory: ".workbuddy", scan: ScanWorkbuddy, usageScan: scanWorkbuddyUsage},
 	{id: "pi", name: "Pi", directory: ".pi", scan: ScanPi, usageScan: scanPiUsage},
 	{id: "dsh", name: "Deepseek Harness", directory: ".dsh", scan: ScanDsh, usageScan: scanDshUsage},
@@ -107,7 +108,7 @@ func ScanSessionsDetailed(home string) SessionScanReport {
 			}
 			directory := filepath.Join(home, def.directory)
 			sessions, err := def.scan(directory)
-			if err != nil && !errors.Is(err, os.ErrNotExist) {
+			if err != nil && !isAbsentStore(directory, err) {
 				failures[i] = append(failures[i], AgentScanFailure{AgentID: def.id, AgentName: def.name, Directory: directory, Err: err})
 			} else if sessions != nil {
 				result.Sessions = sessions
@@ -126,6 +127,19 @@ func joinAgentFailures(groups [][]AgentScanFailure) []AgentScanFailure {
 		out = append(out, group...)
 	}
 	return out
+}
+
+// isAbsentStore separates a normal absent agent store from a broken one. On
+// Windows, opening a regular file as a directory fails with "the system
+// cannot find the path specified", which satisfies errors.Is(err,
+// os.ErrNotExist) even though the store exists; the Lstat fallback only
+// treats the error as absence when the path is really missing.
+func isAbsentStore(directory string, err error) bool {
+	if !errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+	_, statErr := os.Lstat(directory)
+	return errors.Is(statErr, os.ErrNotExist)
 }
 
 // ScanSessions preserves the original empty-on-error convenience API. Use

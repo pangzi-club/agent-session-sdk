@@ -31,8 +31,9 @@ func ScanCodex(agentDir string) ([]SessionInfo, error) {
 }
 
 func codexSessionFiles(agentDir string) ([]string, error) {
-	years, err := ListDirsE(filepath.Join(agentDir, "sessions"))
-	if errors.Is(err, os.ErrNotExist) {
+	sessionsRoot := filepath.Join(agentDir, "sessions")
+	years, err := ListDirsE(sessionsRoot)
+	if errors.Is(err, os.ErrNotExist) && !storeEntryExists(agentDir, sessionsRoot) {
 		return []string{}, nil
 	}
 	if err != nil {
