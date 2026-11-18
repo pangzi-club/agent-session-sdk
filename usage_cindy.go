@@ -1,6 +1,10 @@
 package agentsession
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+	"os"
+)
 
 // Cindy sessions can use Pi, Codex or Claude Code. Each engine owns its token
 // format, while records retain Cindy's profile ID and agent ID.
@@ -28,9 +32,23 @@ type cindySessionUsage struct {
 	records []UsageRecord
 }
 
+// Cindy session transcripts are stored as absolute paths in the profile DB and
+// can drift out of sync with disk (archived or deleted while the row stays
+// active). A missing or unreadable transcript skips that one session instead
+// of failing the whole module: a stale row must not wipe Cindy's usage for
+// every other session, and the aggregation layer must not mistake that for
+// "Cindy not installed".
 func scanCindySessionUsage(session SessionInfo) (*cindySessionUsage, error) {
 	result := &cindySessionUsage{session: session, records: []UsageRecord{}}
 	if session.FilePath == nil || *session.FilePath == "" {
+		return result, nil
+	}
+	if info, err := os.Stat(*session.FilePath); err != nil {
+		if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, os.ErrPermission) {
+			return nil, err
+		}
+		return result, nil
+	} else if !info.Mode().IsRegular() {
 		return result, nil
 	}
 	switch session.transcriptFormat {

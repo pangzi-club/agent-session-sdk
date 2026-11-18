@@ -65,6 +65,7 @@ func TestScanCindy(t *testing.T) {
 		`INSERT INTO sessions VALUES ('s1', 'Stored title', '` + ownerDir + `', 'active', NULL, 1790000000000, 1790000002000, 'cc', '` + transcript + `')`,
 		`INSERT INTO sessions VALUES ('s2', 'Codex title', '/tmp/project', 'active', NULL, 1790000003000, 1790000004000, 'codex', 'codex-internal')`,
 		`INSERT INTO sessions VALUES ('s3', 'Claude title', '/tmp/project', 'active', NULL, 1790000005000, 1790000006000, 'cc', 'claude-internal')`,
+		`INSERT INTO sessions VALUES ('stale', 'Stale transcript', '/tmp/gone', 'active', NULL, 1789999000000, 1789999001000, 'pi', '` + filepath.Join(globalDir, "pi-agent-home", "sessions", "deleted-elsewhere.jsonl") + `')`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatal(err)
@@ -82,8 +83,8 @@ func TestScanCindy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sessions) != 3 {
-		t.Fatalf("%d sessions, want 3", len(sessions))
+	if len(sessions) != 4 {
+		t.Fatalf("%d sessions, want 4", len(sessions))
 	}
 	claudeSession := sessions[0]
 	if claudeSession.ID != "s3" || claudeSession.Workspace != "/tmp/project" || claudeSession.transcriptFormat != "claude" ||
@@ -136,6 +137,9 @@ func TestScanCindy(t *testing.T) {
 	usage, err := scanCindyUsage(globalDir)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(usage.sessions) != 4 {
+		t.Fatalf("%d usage sessions, want 4 (the stale-transcript row must not fail the module)", len(usage.sessions))
 	}
 	if len(usage.records) != 3 {
 		t.Fatalf("%d usage records, want one per engine", len(usage.records))
