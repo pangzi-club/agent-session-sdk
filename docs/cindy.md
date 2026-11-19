@@ -152,9 +152,8 @@ up the new references.
 - The store directory mixes session data with Electron caches (Cache,
   GPUCache, blob storage) that churn constantly. The session index signs only
   the session-data subdirectories (`owners`, `pi-agent-home`, `codex-home`,
-  `claude-home`, plus the top-level `cindy-*.db` files) so cache churn does
-  not defeat the skip-unchanged optimization; see `agentDef.signatureRoots`
-  in `registry.go`.
+  `claude-home`) and the top-level `cindy-*.db` and `cindy-*.db-wal` files.
+  Electron cache churn does not invalidate the index.
 
 ## Source map
 
@@ -163,7 +162,7 @@ up the new references.
 | Profile and session discovery | `cindy.go` (`ScanCindy`, `cindyTranscript`, `cindyMessageSizes`) |
 | Messages-mirror fallback | `cindy.go` (`cindyMessageSizes`), `transcript_cindy_db.go` (`parseCindyDBTranscript`) |
 | Messages-mirror usage | `usage_cindy.go` (`scanCindyMirrorUsage`) |
-| Store-signature roots | `registry.go` (`agentDef.signatureRoots`, `agentStoreSignatureFor`) |
+| Store-signature inputs | `registry.go` (`agentStoreSignatureFor`) |
 | Claude path candidates | `cindy.go` (`cindyClaudeTranscript`) |
 | Engine-specific transcript dispatch | `transcript.go` (`parseCindyTranscript`) |
 | Engine-specific usage dispatch | `usage_cindy.go` (`scanCindySessionUsage`) |

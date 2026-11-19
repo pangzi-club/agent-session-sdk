@@ -1,6 +1,7 @@
 package agentsession
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -145,9 +146,7 @@ func TestSessionIndexScannerVersionRebuilds(t *testing.T) {
 	}
 }
 
-// Cindy's signature covers only its session-data subdirectories: churn in
-// Electron caches (Cache, GPUCache, blob storage) must not invalidate the
-// index, while a new session database or transcript file must.
+// Churn in Electron caches must not invalidate the index.
 func TestCindySignatureRootsPruneElectronCaches(t *testing.T) {
 	def := agentDefByID("cindy")
 	home := t.TempDir()
@@ -162,6 +161,8 @@ func TestCindySignatureRootsPruneElectronCaches(t *testing.T) {
 	}
 	// Cache churn: an Electron cache directory changes constantly.
 	writeFile(t, filepath.Join(store, "Cache", "data_1"), strings.Repeat("x", 4096))
+	writeFile(t, filepath.Join(store, "cindy-profile.db.bak"), "backup")
+	writeFile(t, filepath.Join(store, "cindy-profile.db-shm"), "shared memory")
 	after, err := agentStoreSignatureFor(def, store)
 	if err != nil {
 		t.Fatal(err)
@@ -178,6 +179,56 @@ func TestCindySignatureRootsPruneElectronCaches(t *testing.T) {
 	}
 	if before == changed {
 		t.Fatal("a new owner file did not change the Cindy store signature")
+	}
+}
+
+func TestSessionIndexRefreshesCindyDatabaseAndWAL(t *testing.T) {
+	home := t.TempDir()
+	store := filepath.Join(home, cindyStoreDirectory(runtime.GOOS))
+	database := filepath.Join(store, "cindy-profile.db")
+	writeFile(t, filepath.Join(store, "owners", cindyOwnerDirName("profile"), "boundary"), "owner")
+	index, err := OpenSessionIndex(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer index.Close()
+	if _, err := index.Refresh("cindy"); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, statement := range []string{
+		`CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT, working_dir TEXT, status TEXT, hidden_at INTEGER, created_at INTEGER, updated_at INTEGER, agent_kind TEXT, sdk_session_id TEXT)`,
+		`INSERT INTO sessions VALUES ('session', 'Before', '/tmp/work', 'active', NULL, 1, 2, 'pi', NULL)`,
+		`PRAGMA journal_mode = WAL`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertTitle := func(want string) {
+		t.Helper()
+		if stats, err := index.Refresh("cindy"); err != nil || stats.Scanned != 1 {
+			t.Fatalf("refresh stats = %+v, err = %v", stats, err)
+		}
+		session, err := index.Get("cindy", "session")
+		if err != nil || session.Title == nil || *session.Title != want {
+			t.Fatalf("indexed session = %+v, err = %v, want title %q", session, err, want)
+		}
+	}
+	assertTitle("Before")
+	if _, err := db.Exec(`UPDATE sessions SET title = 'After' WHERE id = 'session'`); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(database + "-wal"); err != nil || info.Size() == 0 {
+		t.Fatalf("expected a nonempty WAL after update, got %v, err = %v", info, err)
+	}
+	assertTitle("After")
+	if stats, err := index.Refresh("cindy"); err != nil || stats.Skipped != 1 {
+		t.Fatalf("unchanged refresh stats = %+v, err = %v", stats, err)
 	}
 }
 

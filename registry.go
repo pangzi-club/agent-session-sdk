@@ -21,12 +21,10 @@ type agentDef struct {
 	scan      func(string) ([]SessionInfo, error)
 	usageScan func(string) (*usageModuleResult, error)
 	canDelete bool
-	// signatureRoots lists subdirectories whose contents feed the index's
-	// store signature when they differ from the whole directory (Cindy's
-	// store mixes session data with Electron caches that churn constantly;
-	// signing just the session data keeps the skip-unchanged optimization
-	// effective). Empty means the whole directory.
+	// signatureRoots and signatureFiles select subtrees and top-level file
+	// patterns to sign. When both are empty, sign the whole store.
 	signatureRoots []string
+	signatureFiles []string
 }
 
 // agents is in display order, matching agent-view's AGENTS array. Agents that
@@ -39,7 +37,8 @@ var agents = []agentDef{
 	{id: "opencode", name: "OpenCode", directory: ".local/share/opencode", scan: ScanOpenCode, usageScan: scanOpenCodeUsage},
 	{id: "zcode", name: "ZCode", directory: ".zcode", scan: ScanZcode, usageScan: scanZcodeUsage},
 	{id: "cindy", name: "Cindy", directory: cindyStoreDirectory(runtime.GOOS), scan: ScanCindy, usageScan: scanCindyUsage,
-		signatureRoots: []string{"owners", "pi-agent-home", "codex-home", "claude-home"}},
+		signatureRoots: []string{"owners", "pi-agent-home", "codex-home", "claude-home"},
+		signatureFiles: []string{"cindy-*.db", "cindy-*.db-wal"}},
 	{id: "workbuddy", name: "WorkBuddy", directory: ".workbuddy", scan: ScanWorkbuddy, usageScan: scanWorkbuddyUsage},
 	{id: "pi", name: "Pi", directory: ".pi", scan: ScanPi, usageScan: scanPiUsage},
 	{id: "dsh", name: "Deepseek Harness", directory: ".dsh", scan: ScanDsh, usageScan: scanDshUsage},
@@ -131,10 +130,10 @@ func ScanSessionsDetailed(home string) SessionScanReport {
 }
 
 // agentStoreSignatureFor hashes the file tree the index uses to decide
-// whether an agent's store changed: def.signatureRoots when set, otherwise
-// the whole store directory. See agentDef.signatureRoots.
+// whether an agent's store changed, using any configured subtree and file
+// filters to exclude unrelated data such as Electron caches.
 func agentStoreSignatureFor(def agentDef, root string) (string, error) {
-	if len(def.signatureRoots) == 0 {
+	if len(def.signatureRoots) == 0 && len(def.signatureFiles) == 0 {
 		return agentStoreSignature(root)
 	}
 	hasher := sha256.New()
@@ -144,6 +143,35 @@ func agentStoreSignatureFor(def agentDef, root string) (string, error) {
 			return "", err
 		}
 		fmt.Fprintf(hasher, "%s=%s\n", name, signature)
+	}
+	if len(def.signatureFiles) > 0 {
+		entries, err := os.ReadDir(root)
+		if err != nil && !isAbsentStore(root, err) {
+			return "", err
+		}
+		for _, entry := range entries {
+			if !entry.Type().IsRegular() {
+				continue
+			}
+			for _, pattern := range def.signatureFiles {
+				matched, err := filepath.Match(pattern, entry.Name())
+				if err != nil {
+					return "", err
+				}
+				if !matched {
+					continue
+				}
+				info, err := entry.Info()
+				if errors.Is(err, os.ErrNotExist) {
+					break
+				}
+				if err != nil {
+					return "", err
+				}
+				fmt.Fprintf(hasher, "%s\x00%d\x00%d\x00\n", entry.Name(), info.Size(), info.ModTime().UnixNano())
+				break
+			}
+		}
 	}
 	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
