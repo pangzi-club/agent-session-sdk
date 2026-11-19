@@ -78,6 +78,8 @@
     .tree { overflow-x: auto; padding: 19px 22px; background: #1d2b30; color: #e5efeb; font: 12px/1.85 var(--mono); white-space: pre; }
     .tree .folder { color: #81d5b0; }
     .tree .note { color: #a9b7b4; }
+    .type-code { margin: 12px 0; padding: 16px; overflow-x: auto; background: #1d2b30; color: #e5efeb; font: 13px/1.6 var(--mono); }
+    .type-code code { font-size: inherit; }
     .table-wrap { overflow-x: auto; border: 1px solid var(--line); background: var(--white); }
     table { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; }
     th, td { padding: 11px 13px; border-bottom: 1px solid var(--line); vertical-align: top; }
@@ -267,10 +269,120 @@
                 <tr><td><code>SessionScanResult</code></td><td>按 Agent 分组的会话列表</td><td>包含 <code>canDeleteSessions</code> 能力声明，不执行删除</td></tr>
                 <tr><td><code>Entry</code> / <code>ToolCall</code></td><td>统一 Transcript 内容</td><td>将工具调用和结果压成消费者可展示的条目</td></tr>
                 <tr><td><code>UsageRecord</code> / <code>UsageScan</code></td><td>Token、事件计数与关联会话</td><td>用量字段包含输入、输出、缓存、活跃时长及可选 credits</td></tr>
+                <tr><td><code>AgentUsageSummary</code></td><td>按 Agent 汇总用量</td><td>会话数和请求数用 <code>int</code>，Token 数和活跃时长用 <code>float64</code></td></tr>
               </tbody>
             </table>
           </div>
           <div class="callout"><strong>兼容性重点：</strong><code>contract.go</code> 的字段顺序、<code>omitempty</code> 和显式 <code>null</code> 有意保持与 TypeScript 消费端相同。改动结构体标签前，应该同时检查消费端 IPC 类型和定价版本测试。</div>
+
+          <h3>会话列表与搜索 · <code>[]SessionScanResult</code></h3>
+          <p>每组包含一个 Agent 的会话元数据。<code>Title == nil</code> 输出 <code>"title": null</code>，<code>Blank == nil</code> 时省略 <code>blank</code>，指向 <code>false</code> 时则输出 <code>"blank": false</code>。下面展示 <a href="../contract.go">源码</a>中的公开字段。</p>
+          <pre class="type-code"><code>type SessionInfo struct {
+    ID         string      `json:"id"`
+    Workspace  string      `json:"workspace"`
+    Title      *string     `json:"title"`
+    Blank      *bool       `json:"blank,omitempty"`
+    CreatedAt  float64     `json:"createdAt"`
+    UpdatedAt  float64     `json:"updatedAt"`
+    SizeBytes  float64     `json:"sizeBytes"`
+    FilePath   *string     `json:"filePath,omitempty"`
+    TokenUsage *[5]float64 `json:"tokenUsage,omitempty"`
+}
+
+type SessionScanResult struct {
+    AgentID           string        `json:"agentId"`
+    AgentName         string        `json:"agentName"`
+    Sessions          []SessionInfo `json:"sessions"`
+    CanDeleteSessions *bool         `json:"canDeleteSessions,omitempty"`
+}</code></pre>
+
+          <h3>会话内容 · <code>[]Entry</code></h3>
+          <p>每条内容承载文本、思考或工具调用。<code>Timestamp</code> 是 Unix 毫秒时间戳，<code>DurationMs</code> 是以毫秒计的耗时。</p>
+          <pre class="type-code"><code>type Role string
+
+const (
+    RoleUser      Role = "user"
+    RoleAssistant Role = "assistant"
+    RoleSystem    Role = "system"
+)
+
+type ToolKind string
+
+const (
+    ToolFile    ToolKind = "file"
+    ToolCommand ToolKind = "command"
+    ToolSearch  ToolKind = "search"
+    ToolOther   ToolKind = "other"
+)
+
+type ToolCall struct {
+    Name   string   `json:"name"`
+    Title  string   `json:"title"`
+    Meta   string   `json:"meta"`
+    Kind   ToolKind `json:"kind"`
+    ID     string   `json:"id,omitempty"`
+    Input  string   `json:"input,omitempty"`
+    Output string   `json:"output,omitempty"`
+    Failed bool     `json:"failed,omitempty"`
+}
+
+type Entry struct {
+    Role       Role       `json:"role"`
+    Text       string     `json:"text"`
+    Thinking   string     `json:"thinking,omitempty"`
+    Tools      []ToolCall `json:"tools,omitempty"`
+    Timestamp  float64    `json:"timestamp"`
+    DurationMs float64    `json:"durationMs,omitempty"`
+}</code></pre>
+
+          <h3>用量明细 · <code>UsageScan</code></h3>
+          <p><code>Records</code> 保存用量记录，<code>Sessions</code> 保存关联会话元数据。<code>Model</code>、工具名或技能名计数为 <code>nil</code> 时输出 <code>null</code>，<code>Credits</code> 为 <code>nil</code> 时省略。</p>
+          <pre class="type-code"><code>type UsageRecord struct {
+    SessionID        string              `json:"sessionId"`
+    AgentID          string              `json:"agentId"`
+    Model            *string             `json:"model"`
+    Timestamp        float64             `json:"timestamp"`
+    InputTokens      float64             `json:"inputTokens"`
+    OutputTokens     float64             `json:"outputTokens"`
+    CacheReadTokens  float64             `json:"cacheReadTokens"`
+    CacheWriteTokens float64             `json:"cacheWriteTokens"`
+    UserPrompts      float64             `json:"userPrompts"`
+    ToolCalls        float64             `json:"toolCalls"`
+    ToolCallsByName  *map[string]float64 `json:"toolCallsByName"`
+    SkillCallsByName *map[string]float64 `json:"skillCallsByName"`
+    ActiveMs         float64             `json:"activeMs"`
+    Credits          *float64            `json:"credits,omitempty"`
+}
+
+type UsageSession struct {
+    ID         string      `json:"id"`
+    AgentID    string      `json:"agentId"`
+    AgentName  string      `json:"agentName"`
+    Workspace  string      `json:"workspace"`
+    Title      *string     `json:"title"`
+    CreatedAt  *float64    `json:"createdAt,omitempty"`
+    FilePath   *string     `json:"filePath,omitempty"`
+    TokenUsage *[5]float64 `json:"tokenUsage,omitempty"`
+}
+
+type UsageScan struct {
+    Records  []UsageRecord  `json:"records"`
+    Sessions []UsageSession `json:"sessions"`
+}</code></pre>
+          <p>CLI 的 <code>usage --cost</code> 在每条记录上附加 <code>costUsd</code> 和 <code>costUnpricedTokens</code>，并在顶层附加 <code>pricingVersion</code>。</p>
+
+          <h3>用量汇总 · <code>[]AgentUsageSummary</code></h3>
+          <p><code>Summarize</code> 按 Agent 汇总。<code>Sessions</code> 包括没有用量记录的会话，<code>Requests</code> 统计用量记录数。</p>
+          <pre class="type-code"><code>type AgentUsageSummary struct {
+    AgentID          string  `json:"agentId"`
+    Sessions         int     `json:"sessions"`
+    Requests         int     `json:"requests"`
+    InputTokens      float64 `json:"inputTokens"`
+    OutputTokens     float64 `json:"outputTokens"`
+    CacheReadTokens  float64 `json:"cacheReadTokens"`
+    CacheWriteTokens float64 `json:"cacheWriteTokens"`
+    ActiveMs         float64 `json:"activeMs"`
+}</code></pre>
         </section>
 
         <section id="architecture">
