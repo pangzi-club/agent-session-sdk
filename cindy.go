@@ -82,11 +82,20 @@ func ScanCindy(agentDir string) ([]SessionInfo, error) {
 			format = "cindy-db"
 			sizeBytes = messageSizes[*id]
 		}
+		// A session with no transcript file and no mirrored messages was
+		// created but never messaged; consumers mark it blank instead of
+		// reporting a read error when it is opened.
+		var blank *bool
+		if file == "" && messageSizes[*id] == 0 {
+			value := true
+			blank = &value
+		}
 		out = append(out, SessionInfo{
 			transcriptFormat: format,
 			ID:               *id,
 			Workspace:        *workspace,
 			Title:            ToTitle(row["title"]),
+			Blank:            blank,
 			CreatedAt:        createdAt,
 			UpdatedAt:        updatedAt,
 			SizeBytes:        sizeBytes,

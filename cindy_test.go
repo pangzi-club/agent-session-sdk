@@ -112,6 +112,9 @@ func TestScanCindy(t *testing.T) {
 		// Remote-agent shape: the Claude transcript stayed on the other
 		// device, but the messages mirror backs the session locally.
 		`INSERT INTO sessions VALUES ('remote', 'Remote Claude session', '/tmp/remote', 'active', NULL, 1790000009000, 1790000010000, 'cc', 'd7294fcd-bf22-4371-86a4-c9337edc2421')`,
+		// Blank shape: created but never messaged — no transcript file, no
+		// mirrored messages.
+		`INSERT INTO sessions VALUES ('fresh', 'New CCS', '/tmp/fresh', 'active', NULL, 1790000011000, 1790000011000, 'cc', NULL)`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatal(err)
@@ -151,13 +154,20 @@ func TestScanCindy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sessions) != 6 {
-		t.Fatalf("%d sessions, want 6", len(sessions))
+	if len(sessions) != 7 {
+		t.Fatalf("%d sessions, want 7", len(sessions))
+	}
+
+	// The never-messaged session is marked blank instead of carrying a
+	// missing-transcript reference.
+	fresh := sessions[0]
+	if fresh.ID != "fresh" || fresh.Blank == nil || !*fresh.Blank || fresh.FilePath != nil {
+		t.Fatalf("session %+v, want a blank session with no file", fresh)
 	}
 
 	// The remote session falls back to the messages mirror: a db#session-id
 	// reference, the cindy-db format and a nonzero mirror size.
-	remote := sessions[0]
+	remote := sessions[1]
 	if remote.ID != "remote" || remote.transcriptFormat != "cindy-db" ||
 		remote.FilePath == nil || *remote.FilePath != database+"#remote" ||
 		remote.SizeBytes == 0 {
@@ -196,12 +206,12 @@ func TestScanCindy(t *testing.T) {
 		t.Fatalf("mirror entry 6 = %+v, want the engine error as a system notice", remoteEntries[6])
 	}
 
-	posixSession := sessions[1]
+	posixSession := sessions[2]
 	if posixSession.ID != "posix" || posixSession.transcriptFormat != "pi" ||
 		posixSession.FilePath == nil || filepath.Clean(*posixSession.FilePath) != filepath.Clean(transcript) {
 		t.Fatalf("session %+v, want the POSIX-stored path resolved to its transcript", posixSession)
 	}
-	claudeSession := sessions[2]
+	claudeSession := sessions[3]
 	if claudeSession.ID != "s3" || claudeSession.Workspace != "/tmp/project" || claudeSession.transcriptFormat != "claude" ||
 		claudeSession.Title == nil || *claudeSession.Title != "Claude title" ||
 		claudeSession.SizeBytes == 0 ||
@@ -217,7 +227,7 @@ func TestScanCindy(t *testing.T) {
 		t.Fatalf("Claude entries %+v, want its visible turns", claudeEntries)
 	}
 
-	codexSession := sessions[3]
+	codexSession := sessions[4]
 	if codexSession.ID != "s2" || codexSession.Workspace != "/tmp/project" ||
 		codexSession.Title == nil || *codexSession.Title != "Codex title" ||
 		codexSession.SizeBytes == 0 ||
@@ -233,7 +243,7 @@ func TestScanCindy(t *testing.T) {
 		t.Fatalf("Codex entries %+v, want its visible prompt", codexEntries)
 	}
 
-	session := sessions[4]
+	session := sessions[5]
 	if session.ID != "s1" || session.Workspace != ownerDir ||
 		session.Title == nil || *session.Title != "Stored title" ||
 		session.CreatedAt != 1790000000000 || session.UpdatedAt != 1790000002000 ||
@@ -253,8 +263,8 @@ func TestScanCindy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(usage.sessions) != 6 {
-		t.Fatalf("%d usage sessions, want 6 (the stale-transcript row must not fail the module)", len(usage.sessions))
+	if len(usage.sessions) != 7 {
+		t.Fatalf("%d usage sessions, want 7 (the stale-transcript row must not fail the module)", len(usage.sessions))
 	}
 	// The mirror-backed session aggregates usage from agent_meta: two model
 	// steps (m3 without requestId, m7 with, its m7b repeat deduped away).

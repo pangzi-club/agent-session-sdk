@@ -184,8 +184,18 @@ func TestCindySignatureRootsPruneElectronCaches(t *testing.T) {
 // An agent without signatureRoots keeps signing its whole store directory.
 func TestAgentStoreSignatureForDefaultsToWholeDirectory(t *testing.T) {
 	def := agentDefByID("claude")
+	if def.signatureRoots != nil {
+		t.Fatalf("claude must not declare signatureRoots")
+	}
 	home := t.TempDir()
 	file := writeClaudeIndexFixture(t, home, "sess-1", "t", "2026-11-06T02:25:32.506Z")
+	// Pin mtimes so a watcher touching the fixture between the two walks
+	// cannot make the comparison flaky.
+	fixed := time.Date(2026, 11, 6, 2, 25, 32, 506000000, time.UTC)
+	setMtime(t, file, fixed)
+	setMtime(t, filepath.Join(home, def.directory, "projects", "-Users-demo-app"), fixed)
+	setMtime(t, filepath.Join(home, def.directory, "projects"), fixed)
+	setMtime(t, filepath.Join(home, def.directory), fixed)
 	store := filepath.Join(home, def.directory)
 	signature, err := agentStoreSignatureFor(def, store)
 	if err != nil {
@@ -198,7 +208,6 @@ func TestAgentStoreSignatureForDefaultsToWholeDirectory(t *testing.T) {
 	if signature != direct {
 		t.Fatalf("default signature %q != whole-directory signature %q", signature, direct)
 	}
-	_ = file
 }
 
 func agentDefByID(id string) agentDef {

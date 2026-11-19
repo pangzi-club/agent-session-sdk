@@ -140,6 +140,9 @@ up the new references.
 - The registry's store directory is platform-specific (`cindyStoreDirectory`):
   Electron resolves `appData` to `AppData/Roaming` on Windows and `.config` on
   Linux, so the Cindy store is not always under the macOS path.
+- A session with no transcript file and no mirrored messages was created
+  but never messaged; it is marked `Blank` so consumers can show an empty
+  chat instead of a read error.
 - A missing transcript still emits the metadata row with zero size — or the
   messages-mirror reference when the mirror has content for it.
 - A Claude workspace move can change the project key, so direct-path lookup is
