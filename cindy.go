@@ -14,14 +14,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
 
-// cindyStoreDirectory returns Cindy's store directory relative to the user
-// home, following Electron's appData convention: ~/Library/Application
-// Support on macOS, %APPDATA% (home/AppData/Roaming) on Windows and
-// ~/.config on Linux. The registry joins this with the scanned home.
+// cindyStoreDirectory returns the default store directory relative to home.
 func cindyStoreDirectory(goos string) string {
 	switch goos {
 	case "windows":
@@ -31,6 +29,33 @@ func cindyStoreDirectory(goos string) string {
 	default:
 		return `Library/Application Support/CindyGlobal`
 	}
+}
+
+func cindyWindowsAppDataStore() string {
+	if appData := os.Getenv("APPDATA"); filepath.IsAbs(appData) {
+		return filepath.Join(appData, "CindyGlobal")
+	}
+	return ""
+}
+
+func sameCindyWindowsPath(path, absolutePath string) bool {
+	path, err := filepath.Abs(path)
+	return err == nil && strings.EqualFold(path, filepath.Clean(absolutePath))
+}
+
+func cindyHomeForStore(agentDir string) string {
+	if runtime.GOOS == "windows" {
+		if store := cindyWindowsAppDataStore(); store != "" && sameCindyWindowsPath(agentDir, store) {
+			if home, err := os.UserHomeDir(); err == nil {
+				return home
+			}
+		}
+	}
+	home := agentDir
+	for range strings.Split(cindyStoreDirectory(runtime.GOOS), "/") {
+		home = filepath.Dir(home)
+	}
+	return home
 }
 
 func ScanCindy(agentDir string) ([]SessionInfo, error) {
@@ -268,7 +293,7 @@ func cindyClaudeTranscriptE(agentDir string, workspace *string, sessionID string
 	if workspace == nil || *workspace == "" || sessionID == "" {
 		return "", nil
 	}
-	home := filepath.Dir(filepath.Dir(filepath.Dir(agentDir)))
+	home := cindyHomeForStore(agentDir)
 	configDirs := []string{}
 	if dir := os.Getenv("CLAUDE_CONFIG_DIR"); dir != "" {
 		configDirs = append(configDirs, dir)

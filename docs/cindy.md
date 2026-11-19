@@ -137,9 +137,11 @@ up the new references.
 - Multiple `cindy-*.db` files can coexist after account switches. The SDK uses
   database/WAL activity to identify the recently active profile; it does not
   merge profiles. Backup files (`cindy-<id>.db.bak.*`) are ignored.
-- The registry's store directory is platform-specific (`cindyStoreDirectory`):
-  Electron resolves `appData` to `AppData/Roaming` on Windows and `.config` on
-  Linux, so the Cindy store is not always under the macOS path.
+- For the current Windows user, session, usage and index scans use
+  `%APPDATA%\CindyGlobal` when `APPDATA` is absolute. If it is unset or relative,
+  or the caller targets a different home, they use
+  `<home>\AppData\Roaming\CindyGlobal`. A redirected `APPDATA` does not move
+  the shared Claude store out of the user's home.
 - A session with no transcript file and no mirrored messages was created
   but never messaged; it is marked `Blank` so consumers can show an empty
   chat instead of a read error.

@@ -114,7 +114,7 @@ func ScanSessionsDetailed(home string) SessionScanReport {
 				AgentName: def.name,
 				Sessions:  []SessionInfo{},
 			}
-			directory := filepath.Join(home, def.directory)
+			directory := agentStorePath(home, def)
 			sessions, err := def.scan(directory)
 			if err != nil && !isAbsentStore(directory, err) {
 				failures[i] = append(failures[i], AgentScanFailure{AgentID: def.id, AgentName: def.name, Directory: directory, Err: err})
@@ -129,6 +129,17 @@ func ScanSessionsDetailed(home string) SessionScanReport {
 	return SessionScanReport{Results: results, Failures: joinAgentFailures(failures)}
 }
 
+func agentStorePath(home string, def agentDef) string {
+	if def.id == "cindy" && runtime.GOOS == "windows" {
+		if userHome, err := os.UserHomeDir(); err == nil && sameCindyWindowsPath(home, userHome) {
+			if store := cindyWindowsAppDataStore(); store != "" {
+				return store
+			}
+		}
+	}
+	return filepath.Join(home, def.directory)
+}
+
 // agentStoreSignatureFor hashes the file tree the index uses to decide
 // whether an agent's store changed, using any configured subtree and file
 // filters to exclude unrelated data such as Electron caches.
@@ -137,6 +148,7 @@ func agentStoreSignatureFor(def agentDef, root string) (string, error) {
 		return agentStoreSignature(root)
 	}
 	hasher := sha256.New()
+	fmt.Fprintf(hasher, "%s\x00\n", root)
 	for _, name := range def.signatureRoots {
 		signature, err := agentStoreSignature(filepath.Join(root, name))
 		if err != nil {

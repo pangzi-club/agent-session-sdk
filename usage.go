@@ -4,10 +4,7 @@
 // session map) mirror agent-view's usage/scan.ts step by step.
 package agentsession
 
-import (
-	"path/filepath"
-	"sync"
-)
+import "sync"
 
 type usageModuleResult struct {
 	sessions []SessionInfo
@@ -51,7 +48,7 @@ func ScanAllUsageDetailed(home string) UsageScanReport {
 		go func(i int) {
 			defer wg.Done()
 			module := usageModules[i]
-			directory := filepath.Join(home, module.directory)
+			directory := agentStorePath(home, module)
 			result, err := module.usageScan(directory)
 			if err != nil && !isAbsentStore(directory, err) {
 				failures[i] = append(failures[i], AgentScanFailure{AgentID: module.id, AgentName: module.name, Directory: directory, Err: err})

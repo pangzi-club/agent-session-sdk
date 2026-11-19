@@ -111,6 +111,7 @@ func (index *SessionIndex) Refresh(agentIDs ...string) (RefreshStats, error) {
 
 	type scanResult struct {
 		def          agentDef
+		storeRoot    string
 		before       string
 		after        string
 		skipped      bool
@@ -126,8 +127,8 @@ func (index *SessionIndex) Refresh(agentIDs ...string) (RefreshStats, error) {
 	// released by the deferred unlock).
 	var abortErr error
 	for i, def := range selected {
-		storeRoot := filepath.Join(index.home, def.directory)
-		result := scanResult{def: def}
+		storeRoot := agentStorePath(index.home, def)
+		result := scanResult{def: def, storeRoot: storeRoot}
 		result.before, result.signatureErr = agentStoreSignatureFor(def, storeRoot)
 		results[i] = result
 		if result.signatureErr != nil {
@@ -149,14 +150,12 @@ func (index *SessionIndex) Refresh(agentIDs ...string) (RefreshStats, error) {
 			continue
 		}
 		wg.Add(1)
-		go func(i int, def agentDef, before string) {
+		go func(i int, result scanResult) {
 			defer wg.Done()
-			result := scanResult{def: def, before: before}
-			storeRoot := filepath.Join(index.home, def.directory)
-			result.sessions, result.scanErr = def.scan(storeRoot)
-			result.after, result.signatureErr = agentStoreSignatureFor(def, storeRoot)
+			result.sessions, result.scanErr = result.def.scan(result.storeRoot)
+			result.after, result.signatureErr = agentStoreSignatureFor(result.def, result.storeRoot)
 			results[i] = result
-		}(i, def, result.before)
+		}(i, result)
 	}
 	wg.Wait()
 	if abortErr != nil {
@@ -175,7 +174,7 @@ func (index *SessionIndex) Refresh(agentIDs ...string) (RefreshStats, error) {
 				err = result.scanErr
 			}
 			failures = append(failures, AgentScanFailure{AgentID: result.def.id, AgentName: result.def.name,
-				Directory: filepath.Join(index.home, result.def.directory), Err: err})
+				Directory: result.storeRoot, Err: err})
 			continue
 		}
 		signature := result.after
