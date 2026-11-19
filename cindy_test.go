@@ -124,13 +124,15 @@ func TestScanCindy(t *testing.T) {
 		`CREATE TABLE messages (id TEXT PRIMARY KEY, client_id TEXT, session_id TEXT, role TEXT, content TEXT, tool_use_id TEXT, created_at INTEGER, agent_meta TEXT, rewind_at INTEGER, agent_kind TEXT)`,
 		`INSERT INTO messages VALUES ('m1', NULL, 'remote', 'user', '{"text":"克隆仓库","images":[],"files":[]}', NULL, 1790000009000, NULL, NULL, 'cc')`,
 		`INSERT INTO messages VALUES ('m2', NULL, 'remote', 'thinking', '{"kind":"thinking","text":"先看环境","durationMs":27744,"finishedAt":1790000035968}', NULL, 1790000010000, NULL, NULL, 'cc')`,
-		`INSERT INTO messages VALUES ('m3', NULL, 'remote', 'tool_use', '{"toolUseId":"call-1","toolName":"Bash","input":{"command":"git clone https://example.invalid/repo.git","description":"克隆仓库"}}', 'call-1', 1790000020000, NULL, NULL, 'cc')`,
-		`INSERT INTO messages VALUES ('m4', NULL, 'remote', 'tool_result', 'Cloned into repo', 'call-1', 1790000030000, NULL, NULL, 'cc')`,
+		`INSERT INTO messages VALUES ('m3', NULL, 'remote', 'tool_use', '{"toolUseId":"call-1","toolName":"Bash","input":{"command":"git clone https://example.invalid/repo.git","description":"克隆仓库"}}', 'call-1', 1790000020000, '{"model":"claude-test","usage":{"input":10,"output":5}}', NULL, 'cc')`,
+		`INSERT INTO messages VALUES ('m4', NULL, 'remote', 'tool_result', '{"type":"tool_result_compacted","version":1,"originalBytes":370,"compactedAt":1790000035968.0}', 'call-1', 1790000030000, NULL, NULL, 'cc')`,
 		`INSERT INTO messages VALUES ('m5', NULL, 'remote', 'tool_use', '{"toolUseId":"call-2","toolName":"Read","input":{"file_path":"/tmp/repo/go.mod"}}', 'call-2', 1790000040000, NULL, NULL, 'cc')`,
 		`INSERT INTO messages VALUES ('m6', NULL, 'remote', 'tool_result', '<tool_use_error>no such file</tool_use_error>', 'call-2', 1790000050000, NULL, NULL, 'cc')`,
-		`INSERT INTO messages VALUES ('m7', NULL, 'remote', 'assistant', '克隆完成', NULL, 1790000060000, NULL, NULL, 'cc')`,
+		`INSERT INTO messages VALUES ('m7', NULL, 'remote', 'assistant', '克隆完成', NULL, 1790000060000, '{"model":"claude-test","requestId":"req-1","usage":{"input":40,"output":6,"cacheRead":30,"cacheWrite":4}}', NULL, 'cc')`,
+		// Same model step repeated on a second row: the requestId dedupes it.
+		`INSERT INTO messages VALUES ('m7b', NULL, 'remote', 'thinking', '{"kind":"thinking","text":"尾巴"}', NULL, 1790000061000, '{"model":"claude-test","requestId":"req-1","usage":{"input":40,"output":6,"cacheRead":30,"cacheWrite":4}}', NULL, 'cc')`,
 		`INSERT INTO messages VALUES ('m8', NULL, 'remote', 'user', 'rewound away', NULL, 1790000070000, NULL, 1790000070000, 'cc')`,
-		`INSERT INTO messages VALUES ('m9', NULL, 'remote', 'ask_user', '{"requestId":"q1","questions":[{"question":"继续吗"}]}', NULL, 1790000080000, NULL, NULL, 'cc')`,
+		`INSERT INTO messages VALUES ('m9', NULL, 'remote', 'ask_user', '{"requestId":"q1","questions":[{"question":"继续吗"}]}', NULL, 1790000080000, '{"answers":{"继续吗":"好"},"cancelled":false}', NULL, 'cc')`,
 		`INSERT INTO messages VALUES ('m10', NULL, 'remote', 'error', '{"message":"[PI_IMAGE_INPUT_UNSUPPORTED] unsupported","dismissed":true}', NULL, 1790000090000, NULL, NULL, 'cc')`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
@@ -165,8 +167,8 @@ func TestScanCindy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(remoteEntries) != 6 {
-		t.Fatalf("%d mirror entries, want 6 (user, thinking, two tools, reply, error)", len(remoteEntries))
+	if len(remoteEntries) != 7 {
+		t.Fatalf("%d mirror entries, want 7 (user, thinking, two tools, reply, tail thinking, error)", len(remoteEntries))
 	}
 	if remoteEntries[0].Role != RoleUser || remoteEntries[0].Text != "克隆仓库" {
 		t.Fatalf("mirror entry 0 = %+v, want the unwrapped user text", remoteEntries[0])
@@ -176,8 +178,9 @@ func TestScanCindy(t *testing.T) {
 	}
 	firstTool := remoteEntries[2].Tools[0]
 	if firstTool.Name != "Bash" || firstTool.ID != "call-1" ||
-		firstTool.Output != "Cloned into repo" || firstTool.Failed {
-		t.Fatalf("first tool call = %+v, want its matched result", firstTool)
+		firstTool.Failed || !strings.Contains(firstTool.Output, "compacted by Cindy") ||
+		!strings.Contains(firstTool.Output, "370") {
+		t.Fatalf("first tool call = %+v, want the compacted-result notice", firstTool)
 	}
 	secondTool := remoteEntries[3].Tools[0]
 	if secondTool.Name != "Read" || !secondTool.Failed || secondTool.Output == "" {
@@ -186,8 +189,11 @@ func TestScanCindy(t *testing.T) {
 	if remoteEntries[4].Text != "克隆完成" {
 		t.Fatalf("mirror entry 4 = %+v, want the assistant reply", remoteEntries[4])
 	}
-	if remoteEntries[5].Role != RoleSystem || !strings.Contains(remoteEntries[5].Text, "PI_IMAGE_INPUT_UNSUPPORTED") {
-		t.Fatalf("mirror entry 5 = %+v, want the engine error as a system notice", remoteEntries[5])
+	if remoteEntries[5].Thinking != "尾巴" {
+		t.Fatalf("mirror entry 5 = %+v, want the tail thinking row", remoteEntries[5])
+	}
+	if remoteEntries[6].Role != RoleSystem || !strings.Contains(remoteEntries[6].Text, "PI_IMAGE_INPUT_UNSUPPORTED") {
+		t.Fatalf("mirror entry 6 = %+v, want the engine error as a system notice", remoteEntries[6])
 	}
 
 	posixSession := sessions[1]
@@ -250,8 +256,28 @@ func TestScanCindy(t *testing.T) {
 	if len(usage.sessions) != 6 {
 		t.Fatalf("%d usage sessions, want 6 (the stale-transcript row must not fail the module)", len(usage.sessions))
 	}
-	if len(usage.records) != 4 {
-		t.Fatalf("%d usage records, want one per engine", len(usage.records))
+	// The mirror-backed session aggregates usage from agent_meta: two model
+	// steps (m3 without requestId, m7 with, its m7b repeat deduped away).
+	var mirrorRecords []UsageRecord
+	for _, record := range usage.records {
+		if record.SessionID == "remote" {
+			mirrorRecords = append(mirrorRecords, record)
+		}
+	}
+	if len(mirrorRecords) != 2 {
+		t.Fatalf("%d mirror usage records, want 2", len(mirrorRecords))
+	}
+	if r := mirrorRecords[0]; r.InputTokens != 10 || r.OutputTokens != 5 || r.Model == nil || *r.Model != "claude-test" ||
+		r.UserPrompts != 1 || r.ToolCalls != 1 || r.ToolCallsByName == nil || (*r.ToolCallsByName)["Bash"] != 1 {
+		t.Fatalf("mirror record 0 = %+v, want m3's usage with the prompt and its Bash call", r)
+	}
+	if r := mirrorRecords[1]; r.InputTokens != 40 || r.OutputTokens != 6 ||
+		r.CacheReadTokens != 30 || r.CacheWriteTokens != 4 || r.ToolCalls != 1 ||
+		r.UserPrompts != 0 || r.ActiveMs != 20000 {
+		t.Fatalf("mirror record 1 = %+v, want m7's deduped usage with the Read call", r)
+	}
+	if len(usage.records) != 6 {
+		t.Fatalf("%d usage records, want one per engine plus the two mirror steps", len(usage.records))
 	}
 	bySession := map[string]UsageRecord{}
 	for _, record := range usage.records {

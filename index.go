@@ -128,7 +128,7 @@ func (index *SessionIndex) Refresh(agentIDs ...string) (RefreshStats, error) {
 	for i, def := range selected {
 		storeRoot := filepath.Join(index.home, def.directory)
 		result := scanResult{def: def}
-		result.before, result.signatureErr = agentStoreSignature(storeRoot)
+		result.before, result.signatureErr = agentStoreSignatureFor(def, storeRoot)
 		results[i] = result
 		if result.signatureErr != nil {
 			continue
@@ -154,7 +154,7 @@ func (index *SessionIndex) Refresh(agentIDs ...string) (RefreshStats, error) {
 			result := scanResult{def: def, before: before}
 			storeRoot := filepath.Join(index.home, def.directory)
 			result.sessions, result.scanErr = def.scan(storeRoot)
-			result.after, result.signatureErr = agentStoreSignature(storeRoot)
+			result.after, result.signatureErr = agentStoreSignatureFor(def, storeRoot)
 			results[i] = result
 		}(i, def, result.before)
 	}

@@ -35,6 +35,9 @@ func parseCindyDBTranscript(info SessionInfo) ([]Entry, error) {
 
 	// Tool results arrive as separate rows and are matched back onto their
 	// tool call by tool_use_id, mirroring applyToolResults for Claude JSONL.
+	// Compacted results lost their text to Cindy's rolling compaction, and
+	// structured results (clarification answers and other JSON envelopes) are
+	// rendered as a short notice instead of raw JSON.
 	type toolResult struct {
 		id, output string
 		failed     bool
@@ -51,7 +54,7 @@ func parseCindyDBTranscript(info SessionInfo) ([]Entry, error) {
 		output, _ := row["content"].(string)
 		results[id] = toolResult{
 			id:     id,
-			output: output,
+			output: cindyDBToolResultOutput(output),
 			failed: strings.Contains(output, "<tool_use_error>"),
 		}
 	}
@@ -157,10 +160,33 @@ func cindyDBUnwrapContent(role Role, content string) any {
 	return content
 }
 
-// firstNumber reads a numeric field, defaulting to 0.
-func firstNumber(m map[string]any, key string) float64 {
-	if f, ok := AsNumber(m[key]); ok {
-		return f
+// firstNumber reads the first non-zero numeric field among keys, defaulting
+// to 0 when none is present (a zero placeholder and a missing field read the
+// same, which is what the mirror's usage shapes need).
+func firstNumber(m map[string]any, keys ...string) float64 {
+	for _, key := range keys {
+		if f, ok := AsNumber(m[key]); ok && f != 0 {
+			return f
+		}
 	}
 	return 0
+}
+
+// cindyDBToolResultOutput renders a tool_result row's stored content. Plain
+// text passes through; Cindy's compactor replaces older results with a
+// {"type":"tool_result_compacted", "originalBytes": n} envelope, and other
+// structured payloads (clarification answers, future envelopes) become a one
+// line summary so the tool card never shows raw JSON.
+func cindyDBToolResultOutput(content string) string {
+	if obj := parseJSONMap(content); obj != nil {
+		if IsStr(obj["type"], "tool_result_compacted") {
+			bytes := firstNumber(obj, "originalBytes")
+			if bytes > 0 {
+				return fmt.Sprintf("[output compacted by Cindy, %d original bytes]", int64(bytes))
+			}
+			return "[output compacted by Cindy]"
+		}
+		return "[structured result] " + clipLine(compactJSON(obj), 200)
+	}
+	return content
 }

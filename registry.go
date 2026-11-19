@@ -1,6 +1,8 @@
 package agentsession
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -19,6 +21,12 @@ type agentDef struct {
 	scan      func(string) ([]SessionInfo, error)
 	usageScan func(string) (*usageModuleResult, error)
 	canDelete bool
+	// signatureRoots lists subdirectories whose contents feed the index's
+	// store signature when they differ from the whole directory (Cindy's
+	// store mixes session data with Electron caches that churn constantly;
+	// signing just the session data keeps the skip-unchanged optimization
+	// effective). Empty means the whole directory.
+	signatureRoots []string
 }
 
 // agents is in display order, matching agent-view's AGENTS array. Agents that
@@ -30,7 +38,8 @@ var agents = []agentDef{
 	{id: "cursor", name: "Cursor", directory: ".cursor", scan: ScanCursor},
 	{id: "opencode", name: "OpenCode", directory: ".local/share/opencode", scan: ScanOpenCode, usageScan: scanOpenCodeUsage},
 	{id: "zcode", name: "ZCode", directory: ".zcode", scan: ScanZcode, usageScan: scanZcodeUsage},
-	{id: "cindy", name: "Cindy", directory: cindyStoreDirectory(runtime.GOOS), scan: ScanCindy, usageScan: scanCindyUsage},
+	{id: "cindy", name: "Cindy", directory: cindyStoreDirectory(runtime.GOOS), scan: ScanCindy, usageScan: scanCindyUsage,
+		signatureRoots: []string{"owners", "pi-agent-home", "codex-home", "claude-home"}},
 	{id: "workbuddy", name: "WorkBuddy", directory: ".workbuddy", scan: ScanWorkbuddy, usageScan: scanWorkbuddyUsage},
 	{id: "pi", name: "Pi", directory: ".pi", scan: ScanPi, usageScan: scanPiUsage},
 	{id: "dsh", name: "Deepseek Harness", directory: ".dsh", scan: ScanDsh, usageScan: scanDshUsage},
@@ -119,6 +128,24 @@ func ScanSessionsDetailed(home string) SessionScanReport {
 	}
 	wg.Wait()
 	return SessionScanReport{Results: results, Failures: joinAgentFailures(failures)}
+}
+
+// agentStoreSignatureFor hashes the file tree the index uses to decide
+// whether an agent's store changed: def.signatureRoots when set, otherwise
+// the whole store directory. See agentDef.signatureRoots.
+func agentStoreSignatureFor(def agentDef, root string) (string, error) {
+	if len(def.signatureRoots) == 0 {
+		return agentStoreSignature(root)
+	}
+	hasher := sha256.New()
+	for _, name := range def.signatureRoots {
+		signature, err := agentStoreSignature(filepath.Join(root, name))
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintf(hasher, "%s=%s\n", name, signature)
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
 func joinAgentFailures(groups [][]AgentScanFailure) []AgentScanFailure {

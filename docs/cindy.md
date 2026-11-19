@@ -79,7 +79,7 @@ version invalidates older derived rows.
 | Pi / legacy absolute path | `parsePiTranscript` | `scanPiSessionUsage`: direct `message.usage` token fields |
 | Codex | `parseCodexTranscript` | `scanCodexUsageRecords`: deltas of cumulative `token_count` totals |
 | Claude Code | `parseClaudeTranscript` | `scanClaudeUsageRecords`: per-turn `message.usage` token fields |
-| Missing file (any engine) | `parseCindyDBTranscript` (`transcript_cindy_db.go`): the messages mirror | none (no engine usage data on this machine) |
+| Missing file (any engine) | `parseCindyDBTranscript` (`transcript_cindy_db.go`): the messages mirror | `scanCindyMirrorUsage` (`usage_cindy.go`): aggregates the per-row `agent_meta.usage` objects |
 
 The shared engine implementations preserve their native model, prompt, tool and
 active-time semantics. Output records replace only `SessionID` and `AgentID`
@@ -113,14 +113,20 @@ The mirror parser reads rows ordered by `created_at`:
 | `assistant` | text entry (plain text) |
 | `thinking` | thinking entry with `text` and `durationMs` |
 | `tool_use` | tool card from `{toolUseId, toolName, input}` |
-| `tool_result` | matched back onto its tool card by `tool_use_id`; `<tool_use_error>` marks failure |
+| `tool_result` | matched back onto its tool card by `tool_use_id`; `<tool_use_error>` marks failure; a `tool_result_compacted` envelope renders as a compaction notice, other structured payloads as a one-line summary |
 | `error` | system notice with the engine error message |
 | `system`, `agent_switch`, `ask_user`, `progress` | internal bookkeeping, skipped |
 
-Rows with a non-null `rewind_at` are excluded. Usage scanning stays with the
-engine transcripts: the mirror carries no token counts, so a mirror-backed
-session contributes metadata with no usage records (the usage module already
-skips sessions whose transcript is unreadable).
+Rows with a non-null `rewind_at` are excluded.
+
+Mirror-backed usage aggregates `agent_meta.usage` per row: every row of one
+model step repeats that step's usage object (non-assistant rows carry a zero
+placeholder), so usage counts once per distinct `requestId` — deduped by
+timestamp and token counts for rows without one — and zero rows are skipped.
+The usage keys differ per engine shape (`input`/`output`/`cacheRead`/
+`cacheWrite` or `inputTokens`/`outputTokens`/`cacheReadTokens`/
+`cacheWriteTokens`). Prompts and tool calls feed the same `SessionTally`
+intervals the engine extractors use.
 
 The session index persists `transcript_format`, and bumping
 `sessionIndexScannerVersion` rebuilds derived rows so pre-mirror indexes pick
@@ -140,6 +146,12 @@ up the new references.
   not the only discovery mechanism.
 - The SQLite file may be open while Cindy is running. The SDK opens it
   read-only with a short busy timeout.
+- The store directory mixes session data with Electron caches (Cache,
+  GPUCache, blob storage) that churn constantly. The session index signs only
+  the session-data subdirectories (`owners`, `pi-agent-home`, `codex-home`,
+  `claude-home`, plus the top-level `cindy-*.db` files) so cache churn does
+  not defeat the skip-unchanged optimization; see `agentDef.signatureRoots`
+  in `registry.go`.
 
 ## Source map
 
@@ -147,6 +159,8 @@ up the new references.
 |---|---|
 | Profile and session discovery | `cindy.go` (`ScanCindy`, `cindyTranscript`, `cindyMessageSizes`) |
 | Messages-mirror fallback | `cindy.go` (`cindyMessageSizes`), `transcript_cindy_db.go` (`parseCindyDBTranscript`) |
+| Messages-mirror usage | `usage_cindy.go` (`scanCindyMirrorUsage`) |
+| Store-signature roots | `registry.go` (`agentDef.signatureRoots`, `agentStoreSignatureFor`) |
 | Claude path candidates | `cindy.go` (`cindyClaudeTranscript`) |
 | Engine-specific transcript dispatch | `transcript.go` (`parseCindyTranscript`) |
 | Engine-specific usage dispatch | `usage_cindy.go` (`scanCindySessionUsage`) |

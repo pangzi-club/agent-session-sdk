@@ -3,6 +3,7 @@ package agentsession
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -143,6 +144,73 @@ func TestSessionIndexScannerVersionRebuilds(t *testing.T) {
 		t.Fatalf("session did not return after rebuild: %v", err)
 	}
 }
+
+// Cindy's signature covers only its session-data subdirectories: churn in
+// Electron caches (Cache, GPUCache, blob storage) must not invalidate the
+// index, while a new session database or transcript file must.
+func TestCindySignatureRootsPruneElectronCaches(t *testing.T) {
+	def := agentDefByID("cindy")
+	home := t.TempDir()
+	store := filepath.Join(home, cindyStoreDirectory(runtime.GOOS))
+	if def.signatureRoots == nil {
+		t.Fatal("cindy must declare signatureRoots")
+	}
+
+	before, err := agentStoreSignatureFor(def, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Cache churn: an Electron cache directory changes constantly.
+	writeFile(t, filepath.Join(store, "Cache", "data_1"), strings.Repeat("x", 4096))
+	after, err := agentStoreSignatureFor(def, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before != after {
+		t.Fatal("cache churn changed the Cindy store signature")
+	}
+
+	// Session data: a new owner file must invalidate.
+	writeFile(t, filepath.Join(store, "owners", hash20("profile"), "boundary"), "x")
+	changed, err := agentStoreSignatureFor(def, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before == changed {
+		t.Fatal("a new owner file did not change the Cindy store signature")
+	}
+}
+
+// An agent without signatureRoots keeps signing its whole store directory.
+func TestAgentStoreSignatureForDefaultsToWholeDirectory(t *testing.T) {
+	def := agentDefByID("claude")
+	home := t.TempDir()
+	file := writeClaudeIndexFixture(t, home, "sess-1", "t", "2026-11-06T02:25:32.506Z")
+	store := filepath.Join(home, def.directory)
+	signature, err := agentStoreSignatureFor(def, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	direct, err := agentStoreSignature(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if signature != direct {
+		t.Fatalf("default signature %q != whole-directory signature %q", signature, direct)
+	}
+	_ = file
+}
+
+func agentDefByID(id string) agentDef {
+	for _, def := range agents {
+		if def.id == id {
+			return def
+		}
+	}
+	panic("unknown agent " + id)
+}
+
+func hash20(s string) string { return cindyOwnerDirName(s) }
 
 func TestSessionIndexPathOverride(t *testing.T) {
 	home := t.TempDir()
