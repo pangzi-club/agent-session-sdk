@@ -28,13 +28,13 @@ func TestCindyStoreDirectory(t *testing.T) {
 // Legacy rows store POSIX transcript paths; on Windows filepath.IsAbs is
 // false for them, yet they must still be treated as paths, not session ids.
 func TestCindyStoredPathIsAbsolute(t *testing.T) {
-	for _, path := range []string{
-		`/Users/demo/Library/Application Support/CindyGlobal/pi-agent-home/sessions/s.jsonl`,
-		`C:\Users\demo\AppData\Roaming\CindyGlobal\pi-agent-home\sessions\s.jsonl`,
-	} {
-		if !cindyStoredPathIsAbsolute(path) {
-			t.Errorf("stored path %q not detected as absolute", path)
-		}
+	posixPath := `/Users/demo/Library/Application Support/CindyGlobal/pi-agent-home/sessions/s.jsonl`
+	if !cindyStoredPathIsAbsolute(posixPath) {
+		t.Errorf("stored POSIX path %q not detected as absolute", posixPath)
+	}
+	windowsPath := `C:\Users\demo\AppData\Roaming\CindyGlobal\pi-agent-home\sessions\s.jsonl`
+	if got, want := cindyStoredPathIsAbsolute(windowsPath), runtime.GOOS == "windows"; got != want {
+		t.Errorf("stored Windows path %q absolute on %s = %t, want %t", windowsPath, runtime.GOOS, got, want)
 	}
 	for _, id := range []string{"", "d7294fcd-bf22-4371-86a4-c9337edc2421", "codex-internal", "relative/path.jsonl"} {
 		if cindyStoredPathIsAbsolute(id) {
