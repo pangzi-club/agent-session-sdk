@@ -111,6 +111,19 @@ func TestRunSessionsPrintsJSONPerAgent(t *testing.T) {
 	}
 }
 
+func TestRunSessionsCanPrintHumanOutput(t *testing.T) {
+	home := t.TempDir()
+	writeCLICodexFixture(t, home)
+
+	exitCode, stdout, stderr := captureRun(t, []string{"sessions", "--home", home, "--agent", "codex", "--human"})
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr: %s", exitCode, stderr)
+	}
+	if strings.Contains(stdout, `"agentId"`) || !strings.Contains(stdout, "Codex") || !strings.Contains(stdout, "rollout-cli-error-report") {
+		t.Fatalf("human output is missing readable session details: %s", stdout)
+	}
+}
+
 func TestRunSearchUsesSessionIndex(t *testing.T) {
 	home := t.TempDir()
 	writeCLICodexFixture(t, home)

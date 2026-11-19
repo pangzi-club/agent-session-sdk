@@ -29,8 +29,8 @@ only reports `canDeleteSessions`.
 ## Install
 
 ```sh
-go get github.com/pangzi-club/agent-session-sdk@v0.1.0
-go install github.com/pangzi-club/agent-session-sdk/cmd/agent-session-sdk@v0.1.0
+go get github.com/pangzi-club/agent-session-sdk@latest
+go install github.com/pangzi-club/agent-session-sdk/cmd/agent-session-sdk@latest
 ```
 
 ## Library usage
@@ -132,6 +132,7 @@ agent-session-sdk <sessions|usage|summary|transcript|search> [flags]
 
 Flags: `--home <dir>` (default `$HOME`), `--agent <ids>`
 (comma-separated filter, e.g. `--agent codex,claude`), `--pretty` (indent),
+`--human` (readable text and transcript rendering; JSON remains the default),
 `--cost` (usage only: appends `costUsd` / `costUnpricedTokens` per record and
 `pricingVersion` at the top level), `--session <id>` (transcript only).
 Additional indexed-read flags: `--index` (sessions/transcript), `--no-refresh`,
@@ -144,11 +145,12 @@ still goes to stdout, so a partial failure never masquerades as "no data".
 
 ```sh
 agent-session-sdk sessions --agent codex --pretty
+agent-session-sdk sessions --agent codex --human
 agent-session-sdk usage --cost | jq '.records | length'
 agent-session-sdk summary --agent codex,claude
-agent-session-sdk transcript --agent claude --session <sessionId> --pretty
+agent-session-sdk transcript --agent claude --session <sessionId> --human
 agent-session-sdk sessions --index --agent codex --pretty
-agent-session-sdk search 登录 --agent claude --limit 20
+agent-session-sdk search 登录 --agent claude --limit 20 --human
 ```
 
 Session scanning covers 16 agents; usage and summary cover the 12 agents with

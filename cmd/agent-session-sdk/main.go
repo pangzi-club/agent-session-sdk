@@ -41,6 +41,7 @@ Flags:
   --limit <n>      Indexed sessions/search only: limit output (0 means unlimited)
   --offset <n>     Indexed sessions/search only: skip leading results
   --pretty         Indent output for readability
+  --human          Print readable text instead of JSON
 
 Session scanning covers %d agents: %s.
 Usage / summary cover the agents with local usage data: %s.
@@ -63,6 +64,7 @@ type cliOptions struct {
 	home      string
 	agents    map[string]bool
 	pretty    bool
+	human     bool
 	session   string
 	cost      bool
 	index     bool
@@ -123,8 +125,14 @@ func run(args []string, stdout, stderr *os.File) int {
 		return 1
 	}
 
-	if err := encode(stdout, payload, opts.pretty); err != nil {
-		fmt.Fprintf(stderr, "failed to serialize output: %v\n", err)
+	var outputErr error
+	if opts.human {
+		outputErr = writeHuman(stdout, command, payload)
+	} else {
+		outputErr = encode(stdout, payload, opts.pretty)
+	}
+	if outputErr != nil {
+		fmt.Fprintf(stderr, "failed to write output: %v\n", outputErr)
 		return 1
 	}
 	failed := false
@@ -182,6 +190,7 @@ func parseFlags(command string, args []string, stderr *os.File) (*cliOptions, er
 	fs.StringVar(&opts.home, "home", "", "target user home directory (default $HOME)")
 	agentList := fs.String("agent", "", "only process the given agents, comma-separated")
 	fs.BoolVar(&opts.pretty, "pretty", false, "indent output")
+	fs.BoolVar(&opts.human, "human", false, "print readable text instead of JSON")
 	fs.StringVar(&opts.session, "session", "", "session id (transcript only)")
 	fs.BoolVar(&opts.cost, "cost", false, "append cost fields (usage only)")
 	fs.BoolVar(&opts.index, "index", false, "use the persistent session index")
