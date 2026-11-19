@@ -16,36 +16,10 @@ var ErrUnsupported = errors.New("transcript format not supported")
 
 // LoadTranscript parses a session's transcript without any caching.
 func LoadTranscript(agentID string, info SessionInfo) ([]Entry, error) {
-	switch agentID {
-	case "claude", "qoder", "qoder-cn":
-		return parseClaudeTranscript(info)
-	case "codex":
-		return parseCodexTranscript(info)
-	case "gemini":
-		return parseGeminiTranscript(info)
-	case "cursor":
-		return parseCursorTranscript(info)
-	case "pi":
-		return parsePiTranscript(info)
-	case "cindy":
-		return parseCindyTranscript(info)
-	case "kimi":
-		return parseKimiTranscript(info)
-	case "kimi-code":
-		return parseKimiCodeTranscript(info)
-	case "dsh":
-		return parseDshTranscript(info)
-	case "workbuddy":
-		return parseWorkbuddyTranscript(info)
-	case "opencode", "zcode":
-		return parseSessionDBTranscript(info)
-	case "hermes":
-		return parseHermesTranscript(info)
-	case "grok":
-		return parseGenericTranscript(info)
-	default:
-		return parseGenericTranscript(info)
+	if def := lookupAgent(agentID); def != nil && def.loadTranscript != nil {
+		return def.loadTranscript(info)
 	}
+	return parseGenericTranscript(info)
 }
 
 // parseCindyTranscript uses the engine recorded in Cindy's profile, rather

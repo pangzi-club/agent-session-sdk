@@ -260,3 +260,42 @@ func writeBenchFile(b *testing.B, path, content string) {
 
 func BenchmarkScanClaude100Sessions(b *testing.B)  { benchmarkClaudeStore(b, 100) }
 func BenchmarkScanClaude1000Sessions(b *testing.B) { benchmarkClaudeStore(b, 1000) }
+
+func benchmarkSessionIndexRefreshUnchanged(b *testing.B, sessions int) {
+	b.Helper()
+	home := b.TempDir()
+	project := filepath.Join(home, ".claude", "projects", "-Users-demo-index-bench")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		b.Fatal(err)
+	}
+	for i := 0; i < sessions; i++ {
+		file := filepath.Join(project, fmt.Sprintf("bench-%d.jsonl", i))
+		writeBenchFile(b, file, fmt.Sprintf(`{"type":"user","cwd":"/Users/demo/index-bench","timestamp":"2026-11-06T02:25:32.506Z","message":{"role":"user","content":[{"type":"text","text":"bench prompt %d"}]}}`+"\n", i))
+	}
+	index, err := OpenSessionIndex(home)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() {
+		if err := index.Close(); err != nil {
+			b.Error(err)
+		}
+	})
+	if _, err := index.Refresh("claude"); err != nil {
+		b.Fatal(err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := index.Refresh("claude"); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkSessionIndexRefreshUnchanged100Sessions(b *testing.B) {
+	benchmarkSessionIndexRefreshUnchanged(b, 100)
+}
+
+func BenchmarkSessionIndexRefreshUnchanged1000Sessions(b *testing.B) {
+	benchmarkSessionIndexRefreshUnchanged(b, 1000)
+}

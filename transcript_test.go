@@ -468,17 +468,21 @@ func TestParseHermesTranscript(t *testing.T) {
 
 func TestParseGenericTranscript(t *testing.T) {
 	dir := t.TempDir()
-	file := filepath.Join(dir, "workbuddy.jsonl")
+	file := filepath.Join(dir, "generic.jsonl")
 	writeFile(t, file, strings.Join([]string{
 		`{"type":"user_message","message":"Hello"}`,
 		`{"type":"agent_message","message":"World"}`,
 	}, "\n"))
-	entries, err := parseGenericTranscript(transcriptInfo(t, "wb", file))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 2 || entries[0].Text != "Hello" || entries[1].Text != "World" {
-		t.Fatalf("entries %+v, want the generic messages", entries)
+	for _, agentID := range []string{"grok", "unregistered"} {
+		t.Run(agentID, func(t *testing.T) {
+			entries, err := LoadTranscript(agentID, transcriptInfo(t, "session", file))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 2 || entries[0].Text != "Hello" || entries[1].Text != "World" {
+				t.Fatalf("entries %+v, want the generic messages", entries)
+			}
+		})
 	}
 }
 

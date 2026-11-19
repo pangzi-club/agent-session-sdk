@@ -11,16 +11,18 @@ import (
 	"sync"
 )
 
-// agentDef is one agent's store location, display name, session scanner and
+// agentDef is one agent's store location, display name, readers and
 // capability bits. canDelete is reported to consumers as canDeleteSessions;
 // deleting sessions is the consumer's job, this library only reads.
 type agentDef struct {
-	id        string
-	name      string
-	directory string
-	scan      func(string) ([]SessionInfo, error)
-	usageScan func(string) (*usageModuleResult, error)
-	canDelete bool
+	id             string
+	name           string
+	directory      string
+	scan           func(string) ([]SessionInfo, error)
+	loadTranscript func(SessionInfo) ([]Entry, error)
+	usageScan      func(string) (*usageModuleResult, error)
+	usageOrder     int
+	canDelete      bool
 	// signatureRoots and signatureFiles select subtrees and top-level file
 	// patterns to sign. When both are empty, sign the whole store.
 	signatureRoots []string
@@ -30,24 +32,24 @@ type agentDef struct {
 // agents is in display order, matching agent-view's AGENTS array. Agents that
 // are only detected but never scanned (qwen) are not listed.
 var agents = []agentDef{
-	{id: "claude", name: "Claude Code", directory: ".claude", scan: ScanClaude, usageScan: scanClaudeUsage, canDelete: true},
-	{id: "codex", name: "Codex", directory: ".codex", scan: ScanCodex, usageScan: scanCodexUsage, canDelete: true},
-	{id: "gemini", name: "Gemini CLI", directory: ".gemini", scan: ScanGemini},
-	{id: "cursor", name: "Cursor", directory: ".cursor", scan: ScanCursor},
-	{id: "opencode", name: "OpenCode", directory: ".local/share/opencode", scan: ScanOpenCode, usageScan: scanOpenCodeUsage},
-	{id: "zcode", name: "ZCode", directory: ".zcode", scan: ScanZcode, usageScan: scanZcodeUsage},
-	{id: "cindy", name: "Cindy", directory: cindyStoreDirectory(runtime.GOOS), scan: ScanCindy, usageScan: scanCindyUsage,
+	{id: "claude", name: "Claude Code", directory: ".claude", scan: ScanClaude, loadTranscript: parseClaudeTranscript, usageScan: scanClaudeUsage, usageOrder: 1, canDelete: true},
+	{id: "codex", name: "Codex", directory: ".codex", scan: ScanCodex, loadTranscript: parseCodexTranscript, usageScan: scanCodexUsage, usageOrder: 2, canDelete: true},
+	{id: "gemini", name: "Gemini CLI", directory: ".gemini", scan: ScanGemini, loadTranscript: parseGeminiTranscript},
+	{id: "cursor", name: "Cursor", directory: ".cursor", scan: ScanCursor, loadTranscript: parseCursorTranscript},
+	{id: "opencode", name: "OpenCode", directory: ".local/share/opencode", scan: ScanOpenCode, loadTranscript: parseSessionDBTranscript, usageScan: scanOpenCodeUsage, usageOrder: 8},
+	{id: "zcode", name: "ZCode", directory: ".zcode", scan: ScanZcode, loadTranscript: parseSessionDBTranscript, usageScan: scanZcodeUsage, usageOrder: 3},
+	{id: "cindy", name: "Cindy", directory: cindyStoreDirectory(runtime.GOOS), scan: ScanCindy, loadTranscript: parseCindyTranscript, usageScan: scanCindyUsage, usageOrder: 7,
 		signatureRoots: []string{"owners", "pi-agent-home", "codex-home", "claude-home"},
 		signatureFiles: []string{"cindy-*.db", "cindy-*.db-wal"}},
-	{id: "workbuddy", name: "WorkBuddy", directory: ".workbuddy", scan: ScanWorkbuddy, usageScan: scanWorkbuddyUsage},
-	{id: "pi", name: "Pi", directory: ".pi", scan: ScanPi, usageScan: scanPiUsage},
-	{id: "dsh", name: "Deepseek Harness", directory: ".dsh", scan: ScanDsh, usageScan: scanDshUsage},
-	{id: "grok", name: "Grok Build", directory: ".grok", scan: ScanGrok, usageScan: scanGrokUsage},
-	{id: "qoder", name: "Qoder", directory: ".qoder", scan: ScanQoder, usageScan: scanQoderUsage},
-	{id: "qoder-cn", name: "Qoder CN", directory: ".qoder-cn", scan: ScanQoder, usageScan: scanQoderCnUsage},
-	{id: "kimi", name: "Kimi", directory: ".kimi", scan: ScanKimi},
-	{id: "kimi-code", name: "Kimi Code", directory: ".kimi-code", scan: ScanKimiCode},
-	{id: "hermes", name: "Hermes", directory: ".hermes", scan: ScanHermes, usageScan: scanHermesUsage},
+	{id: "workbuddy", name: "WorkBuddy", directory: ".workbuddy", scan: ScanWorkbuddy, loadTranscript: parseWorkbuddyTranscript, usageScan: scanWorkbuddyUsage, usageOrder: 4},
+	{id: "pi", name: "Pi", directory: ".pi", scan: ScanPi, loadTranscript: parsePiTranscript, usageScan: scanPiUsage, usageOrder: 6},
+	{id: "dsh", name: "Deepseek Harness", directory: ".dsh", scan: ScanDsh, loadTranscript: parseDshTranscript, usageScan: scanDshUsage, usageOrder: 5},
+	{id: "grok", name: "Grok Build", directory: ".grok", scan: ScanGrok, loadTranscript: parseGenericTranscript, usageScan: scanGrokUsage, usageOrder: 9},
+	{id: "qoder", name: "Qoder", directory: ".qoder", scan: ScanQoder, loadTranscript: parseClaudeTranscript, usageScan: scanQoderUsage, usageOrder: 10},
+	{id: "qoder-cn", name: "Qoder CN", directory: ".qoder-cn", scan: ScanQoder, loadTranscript: parseClaudeTranscript, usageScan: scanQoderCnUsage, usageOrder: 11},
+	{id: "kimi", name: "Kimi", directory: ".kimi", scan: ScanKimi, loadTranscript: parseKimiTranscript},
+	{id: "kimi-code", name: "Kimi Code", directory: ".kimi-code", scan: ScanKimiCode, loadTranscript: parseKimiCodeTranscript},
+	{id: "hermes", name: "Hermes", directory: ".hermes", scan: ScanHermes, loadTranscript: parseHermesTranscript, usageScan: scanHermesUsage, usageOrder: 12},
 }
 
 // KnownAgentIDs returns every registered agent id in registry order.
@@ -70,12 +72,16 @@ func UsageAgentIDs() []string {
 
 // IsKnownAgent reports whether id is registered.
 func IsKnownAgent(id string) bool {
-	for _, def := range agents {
-		if def.id == id {
-			return true
+	return lookupAgent(id) != nil
+}
+
+func lookupAgent(id string) *agentDef {
+	for index := range agents {
+		if agents[index].id == id {
+			return &agents[index]
 		}
 	}
-	return false
+	return nil
 }
 
 // AgentScanFailure identifies an agent whose store could not be scanned.

@@ -11,15 +11,13 @@ type usageModuleResult struct {
 	records  []UsageRecord
 }
 
-// usageModules mirrors the USAGE_MODULES order in usage/scan.ts. Agent identity,
-// store paths and capabilities live in registry.go.
+// usageModules follows the explicit order in the shared agent registry.
 var usageModules = func() []agentDef {
 	modules := []agentDef{}
-	for _, id := range []string{"claude", "codex", "zcode", "workbuddy", "dsh", "pi", "cindy", "opencode", "grok", "qoder", "qoder-cn", "hermes"} {
+	for order := 1; order <= len(agents); order++ {
 		for _, def := range agents {
-			if def.id == id {
+			if def.usageOrder == order && def.usageScan != nil {
 				modules = append(modules, def)
-				break
 			}
 		}
 	}

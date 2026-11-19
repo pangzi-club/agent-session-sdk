@@ -316,12 +316,25 @@ func TestScanCindy(t *testing.T) {
 	if _, err := index.Refresh("cindy"); err != nil {
 		t.Fatal(err)
 	}
-	indexed, err := index.Get("cindy", "s2")
-	if err != nil {
-		t.Fatal(err)
-	}
-	entries, err = LoadTranscript("cindy", *indexed)
-	if err != nil || len(entries) != 2 {
-		t.Fatalf("indexed Codex transcript = %+v, %v", entries, err)
+	for _, fixture := range []struct {
+		id       string
+		first    string
+		entryLen int
+	}{
+		{id: "s1", first: "Check Cindy", entryLen: 2},
+		{id: "s2", first: "Implement it", entryLen: 2},
+		{id: "s3", first: "Check Claude", entryLen: 2},
+		{id: "remote", first: "克隆仓库", entryLen: 7},
+	} {
+		t.Run("indexed/"+fixture.id, func(t *testing.T) {
+			indexed, err := index.Get("cindy", fixture.id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			entries, err := LoadTranscript("cindy", *indexed)
+			if err != nil || len(entries) != fixture.entryLen || entries[0].Text != fixture.first {
+				t.Fatalf("indexed transcript = %+v, %v; want %d entries starting with %q", entries, err, fixture.entryLen, fixture.first)
+			}
+		})
 	}
 }
