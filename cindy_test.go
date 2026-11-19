@@ -109,6 +109,29 @@ func TestScanCindy(t *testing.T) {
 		// Windows shape: sdk_session_id stores a POSIX path that
 		// filepath.IsAbs rejects, yet it is still a transcript path.
 		`INSERT INTO sessions VALUES ('posix', 'Windows legacy path', '` + ownerDir + `', 'active', NULL, 1790000007000, 1790000008000, 'pi', '` + filepath.ToSlash(transcript) + `')`,
+		// Remote-agent shape: the Claude transcript stayed on the other
+		// device, but the messages mirror backs the session locally.
+		`INSERT INTO sessions VALUES ('remote', 'Remote Claude session', '/tmp/remote', 'active', NULL, 1790000009000, 1790000010000, 'cc', 'd7294fcd-bf22-4371-86a4-c9337edc2421')`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The messages mirror: one remote cc session with the full turn mix, one
+	// rewound row that must not surface, and an ask_user card that must not
+	// become a chat turn.
+	for _, statement := range []string{
+		`CREATE TABLE messages (id TEXT PRIMARY KEY, client_id TEXT, session_id TEXT, role TEXT, content TEXT, tool_use_id TEXT, created_at INTEGER, agent_meta TEXT, rewind_at INTEGER, agent_kind TEXT)`,
+		`INSERT INTO messages VALUES ('m1', NULL, 'remote', 'user', '{"text":"克隆仓库","images":[],"files":[]}', NULL, 1790000009000, NULL, NULL, 'cc')`,
+		`INSERT INTO messages VALUES ('m2', NULL, 'remote', 'thinking', '{"kind":"thinking","text":"先看环境","durationMs":27744,"finishedAt":1790000035968}', NULL, 1790000010000, NULL, NULL, 'cc')`,
+		`INSERT INTO messages VALUES ('m3', NULL, 'remote', 'tool_use', '{"toolUseId":"call-1","toolName":"Bash","input":{"command":"git clone https://example.invalid/repo.git","description":"克隆仓库"}}', 'call-1', 1790000020000, NULL, NULL, 'cc')`,
+		`INSERT INTO messages VALUES ('m4', NULL, 'remote', 'tool_result', 'Cloned into repo', 'call-1', 1790000030000, NULL, NULL, 'cc')`,
+		`INSERT INTO messages VALUES ('m5', NULL, 'remote', 'tool_use', '{"toolUseId":"call-2","toolName":"Read","input":{"file_path":"/tmp/repo/go.mod"}}', 'call-2', 1790000040000, NULL, NULL, 'cc')`,
+		`INSERT INTO messages VALUES ('m6', NULL, 'remote', 'tool_result', '<tool_use_error>no such file</tool_use_error>', 'call-2', 1790000050000, NULL, NULL, 'cc')`,
+		`INSERT INTO messages VALUES ('m7', NULL, 'remote', 'assistant', '克隆完成', NULL, 1790000060000, NULL, NULL, 'cc')`,
+		`INSERT INTO messages VALUES ('m8', NULL, 'remote', 'user', 'rewound away', NULL, 1790000070000, NULL, 1790000070000, 'cc')`,
+		`INSERT INTO messages VALUES ('m9', NULL, 'remote', 'ask_user', '{"requestId":"q1","questions":[{"question":"继续吗"}]}', NULL, 1790000080000, NULL, NULL, 'cc')`,
+		`INSERT INTO messages VALUES ('m10', NULL, 'remote', 'error', '{"message":"[PI_IMAGE_INPUT_UNSUPPORTED] unsupported","dismissed":true}', NULL, 1790000090000, NULL, NULL, 'cc')`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatal(err)
@@ -126,15 +149,53 @@ func TestScanCindy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sessions) != 5 {
-		t.Fatalf("%d sessions, want 5", len(sessions))
+	if len(sessions) != 6 {
+		t.Fatalf("%d sessions, want 6", len(sessions))
 	}
-	posixSession := sessions[0]
+
+	// The remote session falls back to the messages mirror: a db#session-id
+	// reference, the cindy-db format and a nonzero mirror size.
+	remote := sessions[0]
+	if remote.ID != "remote" || remote.transcriptFormat != "cindy-db" ||
+		remote.FilePath == nil || *remote.FilePath != database+"#remote" ||
+		remote.SizeBytes == 0 {
+		t.Fatalf("session %+v, want the messages-mirror database reference", remote)
+	}
+	remoteEntries, err := LoadTranscript("cindy", remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remoteEntries) != 6 {
+		t.Fatalf("%d mirror entries, want 6 (user, thinking, two tools, reply, error)", len(remoteEntries))
+	}
+	if remoteEntries[0].Role != RoleUser || remoteEntries[0].Text != "克隆仓库" {
+		t.Fatalf("mirror entry 0 = %+v, want the unwrapped user text", remoteEntries[0])
+	}
+	if remoteEntries[1].Thinking != "先看环境" || remoteEntries[1].DurationMs != 27744 {
+		t.Fatalf("mirror entry 1 = %+v, want the thinking text and duration", remoteEntries[1])
+	}
+	firstTool := remoteEntries[2].Tools[0]
+	if firstTool.Name != "Bash" || firstTool.ID != "call-1" ||
+		firstTool.Output != "Cloned into repo" || firstTool.Failed {
+		t.Fatalf("first tool call = %+v, want its matched result", firstTool)
+	}
+	secondTool := remoteEntries[3].Tools[0]
+	if secondTool.Name != "Read" || !secondTool.Failed || secondTool.Output == "" {
+		t.Fatalf("second tool call = %+v, want the failed result", secondTool)
+	}
+	if remoteEntries[4].Text != "克隆完成" {
+		t.Fatalf("mirror entry 4 = %+v, want the assistant reply", remoteEntries[4])
+	}
+	if remoteEntries[5].Role != RoleSystem || !strings.Contains(remoteEntries[5].Text, "PI_IMAGE_INPUT_UNSUPPORTED") {
+		t.Fatalf("mirror entry 5 = %+v, want the engine error as a system notice", remoteEntries[5])
+	}
+
+	posixSession := sessions[1]
 	if posixSession.ID != "posix" || posixSession.transcriptFormat != "pi" ||
 		posixSession.FilePath == nil || filepath.Clean(*posixSession.FilePath) != filepath.Clean(transcript) {
 		t.Fatalf("session %+v, want the POSIX-stored path resolved to its transcript", posixSession)
 	}
-	claudeSession := sessions[1]
+	claudeSession := sessions[2]
 	if claudeSession.ID != "s3" || claudeSession.Workspace != "/tmp/project" || claudeSession.transcriptFormat != "claude" ||
 		claudeSession.Title == nil || *claudeSession.Title != "Claude title" ||
 		claudeSession.SizeBytes == 0 ||
@@ -150,7 +211,7 @@ func TestScanCindy(t *testing.T) {
 		t.Fatalf("Claude entries %+v, want its visible turns", claudeEntries)
 	}
 
-	codexSession := sessions[2]
+	codexSession := sessions[3]
 	if codexSession.ID != "s2" || codexSession.Workspace != "/tmp/project" ||
 		codexSession.Title == nil || *codexSession.Title != "Codex title" ||
 		codexSession.SizeBytes == 0 ||
@@ -166,7 +227,7 @@ func TestScanCindy(t *testing.T) {
 		t.Fatalf("Codex entries %+v, want its visible prompt", codexEntries)
 	}
 
-	session := sessions[3]
+	session := sessions[4]
 	if session.ID != "s1" || session.Workspace != ownerDir ||
 		session.Title == nil || *session.Title != "Stored title" ||
 		session.CreatedAt != 1790000000000 || session.UpdatedAt != 1790000002000 ||
@@ -186,8 +247,8 @@ func TestScanCindy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(usage.sessions) != 5 {
-		t.Fatalf("%d usage sessions, want 5 (the stale-transcript row must not fail the module)", len(usage.sessions))
+	if len(usage.sessions) != 6 {
+		t.Fatalf("%d usage sessions, want 6 (the stale-transcript row must not fail the module)", len(usage.sessions))
 	}
 	if len(usage.records) != 4 {
 		t.Fatalf("%d usage records, want one per engine", len(usage.records))

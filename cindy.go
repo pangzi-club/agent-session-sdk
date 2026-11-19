@@ -9,6 +9,7 @@ package agentsession
 
 import (
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"os"
@@ -51,6 +52,7 @@ func ScanCindy(agentDir string) ([]SessionInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+	messageSizes := cindyMessageSizes(db)
 
 	out := []SessionInfo{}
 	for _, row := range rows {
@@ -69,18 +71,53 @@ func ScanCindy(agentDir string) ([]SessionInfo, error) {
 		if err != nil {
 			return nil, err
 		}
+		format := cindyTranscriptFormat(FirstOr("", AsString(row["agent_kind"])), FirstOr("", AsString(row["sdk_session_id"])))
+		sizeBytes := FileSize(file)
+		if sizeBytes == 0 && messageSizes[*id] > 0 {
+			// The engine transcript never reached this machine: the session ran
+			// on another device (remote agent) or under a different home. Cindy
+			// mirrors every visible turn in the profile database, so the mirror
+			// stands in for the missing file as a "<db>#<session-id>" reference.
+			file = database + "#" + *id
+			format = "cindy-db"
+			sizeBytes = messageSizes[*id]
+		}
 		out = append(out, SessionInfo{
-			transcriptFormat: cindyTranscriptFormat(FirstOr("", AsString(row["agent_kind"])), FirstOr("", AsString(row["sdk_session_id"]))),
+			transcriptFormat: format,
 			ID:               *id,
 			Workspace:        *workspace,
 			Title:            ToTitle(row["title"]),
 			CreatedAt:        createdAt,
 			UpdatedAt:        updatedAt,
-			SizeBytes:        FileSize(file),
+			SizeBytes:        sizeBytes,
 			FilePath:         filePathOrNil(file),
 		})
 	}
 	return out, nil
+}
+
+// cindyMessageSizes measures each session's mirrored messages. Remote-agent
+// sessions never write an engine transcript locally, but every visible turn
+// is mirrored in the messages table, so its size stands in for the file size.
+// A missing or older messages table returns nil: those profiles keep the
+// metadata-only behavior.
+func cindyMessageSizes(db *sql.DB) map[string]float64 {
+	rows, err := QueryMaps(db, `SELECT session_id,
+		SUM(LENGTH(COALESCE(content, '')) + LENGTH(COALESCE(agent_meta, ''))) AS size_bytes
+		FROM messages WHERE rewind_at IS NULL GROUP BY session_id`)
+	if err != nil {
+		return nil
+	}
+	sizes := make(map[string]float64, len(rows))
+	for _, row := range rows {
+		id := AsString(row["session_id"])
+		size, ok := AsNumber(row["size_bytes"])
+		if id == nil || !ok {
+			continue
+		}
+		sizes[*id] = size
+	}
+	return sizes
 }
 
 // activeCindyProfile picks the profile database touched most recently. Cindy

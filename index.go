@@ -18,7 +18,7 @@ import (
 
 const (
 	sessionIndexSchemaVersion  = 1
-	sessionIndexScannerVersion = 2
+	sessionIndexScannerVersion = 3
 )
 
 // SessionIndex is a derived SQLite index over an effective home directory. The

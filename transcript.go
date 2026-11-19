@@ -58,6 +58,8 @@ func parseCindyTranscript(info SessionInfo) ([]Entry, error) {
 		return parseCodexTranscript(info)
 	case "pi":
 		return parsePiTranscript(info)
+	case "cindy-db":
+		return parseCindyDBTranscript(info)
 	default:
 		return nil, fmt.Errorf("session %q has unsupported Cindy transcript format %q", info.ID, info.transcriptFormat)
 	}

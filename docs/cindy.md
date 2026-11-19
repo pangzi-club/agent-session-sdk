@@ -79,6 +79,7 @@ version invalidates older derived rows.
 | Pi / legacy absolute path | `parsePiTranscript` | `scanPiSessionUsage`: direct `message.usage` token fields |
 | Codex | `parseCodexTranscript` | `scanCodexUsageRecords`: deltas of cumulative `token_count` totals |
 | Claude Code | `parseClaudeTranscript` | `scanClaudeUsageRecords`: per-turn `message.usage` token fields |
+| Missing file (any engine) | `parseCindyDBTranscript` (`transcript_cindy_db.go`): the messages mirror | none (no engine usage data on this machine) |
 
 The shared engine implementations preserve their native model, prompt, tool and
 active-time semantics. Output records replace only `SessionID` and `AgentID`
@@ -89,6 +90,42 @@ rather than silently applying Pi semantics.
 See [pi.md](pi.md), [codex.md](codex.md) and [claude.md](claude.md) for each
 engine's event mapping and aggregation rules.
 
+## Remote sessions and the messages mirror
+
+Cindy mirrors every visible turn of every session in the profile database's
+`messages` table — including sessions whose engine ran on another device
+(remote agents) and legacy rows whose stored transcript path belongs to a
+different home. When the resolved engine transcript is missing locally, the
+scanner falls back to that mirror:
+
+- `FilePath` becomes `<profile-db>#<session-id>`, the same database-reference
+  convention the OpenCode/Zcode loaders use;
+- the internal transcript format is `cindy-db`, handled by
+  `parseCindyDBTranscript` (`transcript_cindy_db.go`);
+- `SizeBytes` is the summed `content` + `agent_meta` length of the session's
+  non-rewound messages.
+
+The mirror parser reads rows ordered by `created_at`:
+
+| `role` | Output |
+|---|---|
+| `user` | text entry; a `{"text": …}` JSON envelope is unwrapped, images/files ignored |
+| `assistant` | text entry (plain text) |
+| `thinking` | thinking entry with `text` and `durationMs` |
+| `tool_use` | tool card from `{toolUseId, toolName, input}` |
+| `tool_result` | matched back onto its tool card by `tool_use_id`; `<tool_use_error>` marks failure |
+| `error` | system notice with the engine error message |
+| `system`, `agent_switch`, `ask_user`, `progress` | internal bookkeeping, skipped |
+
+Rows with a non-null `rewind_at` are excluded. Usage scanning stays with the
+engine transcripts: the mirror carries no token counts, so a mirror-backed
+session contributes metadata with no usage records (the usage module already
+skips sessions whose transcript is unreadable).
+
+The session index persists `transcript_format`, and bumping
+`sessionIndexScannerVersion` rebuilds derived rows so pre-mirror indexes pick
+up the new references.
+
 ## Quirks
 
 - Multiple `cindy-*.db` files can coexist after account switches. The SDK uses
@@ -97,7 +134,8 @@ engine's event mapping and aggregation rules.
 - The registry's store directory is platform-specific (`cindyStoreDirectory`):
   Electron resolves `appData` to `AppData/Roaming` on Windows and `.config` on
   Linux, so the Cindy store is not always under the macOS path.
-- A missing transcript still emits the metadata row with zero size.
+- A missing transcript still emits the metadata row with zero size — or the
+  messages-mirror reference when the mirror has content for it.
 - A Claude workspace move can change the project key, so direct-path lookup is
   not the only discovery mechanism.
 - The SQLite file may be open while Cindy is running. The SDK opens it
@@ -107,7 +145,8 @@ engine's event mapping and aggregation rules.
 
 | Topic | Location |
 |---|---|
-| Profile and session discovery | `cindy.go` (`ScanCindy`, `cindyTranscript`) |
+| Profile and session discovery | `cindy.go` (`ScanCindy`, `cindyTranscript`, `cindyMessageSizes`) |
+| Messages-mirror fallback | `cindy.go` (`cindyMessageSizes`), `transcript_cindy_db.go` (`parseCindyDBTranscript`) |
 | Claude path candidates | `cindy.go` (`cindyClaudeTranscript`) |
 | Engine-specific transcript dispatch | `transcript.go` (`parseCindyTranscript`) |
 | Engine-specific usage dispatch | `usage_cindy.go` (`scanCindySessionUsage`) |
